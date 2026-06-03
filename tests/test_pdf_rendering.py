@@ -24,13 +24,13 @@ def test_render_pdf_pages_creates_image_data_uris(tmp_path: Path) -> None:
 
     assert sorted(rendered) == [1, 2]
     first = rendered[1]
-    assert first.mime_type == "image/jpeg"
-    assert first.data_uri.startswith("data:image/jpeg;base64,")
-    assert first.width_px > 0
-    assert first.height_px > 0
-    assert first.byte_size > 0
-    assert first.path is not None
-    assert first.path.exists()
+    assert first["mime_type"] == "image/jpeg"
+    assert first["data_uri"].startswith("data:image/jpeg;base64,")
+    assert first["width_px"] > 0
+    assert first["height_px"] > 0
+    assert first["byte_size"] > 0
+    assert first["path"] is not None
+    assert first["path"].exists()
 
 
 def _write_pdf(path: Path, page_count: int) -> None:

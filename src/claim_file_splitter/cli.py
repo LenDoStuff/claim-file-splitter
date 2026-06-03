@@ -8,56 +8,63 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .classifiers import AzureProjectPageClassifier, RuleBasedPageClassifier
-from .pipeline import ClaimFileSplitter, SplitterConfig
+from .classifiers import azure_classify_pages, make_azure_openai_client
+from .classifiers import rule_based_classify_pages
+from .customization import DEFAULT_BATCH_SIZE
+from .pipeline import split_claim_file
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     load_cli_environment(argv)
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = build_parser().parse_args(argv)
 
-    classifier = _build_classifier(args)
-    config = SplitterConfig(
-        output_dir=Path(args.output),
-        batch_size=args.batch_size,
-        max_stored_text_chars=args.max_stored_text_chars,
-        use_pdfplumber_fallback=not args.disable_pdfplumber,
-        render_dpi=args.render_dpi,
-        image_format=args.image_format,
-        image_quality=args.image_quality,
-        keep_page_images=args.keep_page_images,
-    )
-
+    project_client = None
+    openai_client = None
     try:
-        splitter = ClaimFileSplitter(classifier=classifier, config=config)
-        result = splitter.run(args.input_pdf)
-        summary = {
-            "source_pdf": str(result.source_pdf),
-            "output_dir": str(result.output_dir),
-            "manifest_path": str(result.manifest_path),
-            "page_count": len(result.pages),
-            "document_count": len(result.segments),
-            "documents": [
-                {
-                    "document_type": written.segment.document_type,
-                    "start_page": written.segment.start_page,
-                    "end_page": written.segment.end_page,
-                    "output_path": str(written.output_path),
-                }
-                for written in result.written_documents
-            ],
-        }
-        print(json.dumps(summary, indent=2))
+        classify_pages = rule_based_classify_pages
+        requires_page_images = False
+        if should_use_azure(args):
+            project_client, openai_client = make_azure_openai_client(
+                args.project_endpoint
+            )
+
+            def classify_pages(batch, *, previous_page=None, rolling_context=None):
+                return azure_classify_pages(
+                    openai_client,
+                    args.deployment,
+                    batch,
+                    rolling_context=rolling_context,
+                )
+
+            requires_page_images = True
+        elif args.classifier == "auto":
+            print(
+                "Azure configuration not found; using rule-based classifier. "
+                "Set AZURE_AI_PROJECT_ENDPOINT and AZURE_OPENAI_DEPLOYMENT to use Azure.",
+                file=sys.stderr,
+            )
+
+        result = split_claim_file(
+            args.input_pdf,
+            output_dir=args.output,
+            classify_pages=classify_pages,
+            requires_page_images=requires_page_images,
+            batch_size=args.batch_size,
+            max_stored_text_chars=args.max_stored_text_chars,
+            use_pdfplumber_fallback=not args.disable_pdfplumber,
+            render_dpi=args.render_dpi,
+            image_format=args.image_format,
+            image_quality=args.image_quality,
+            keep_page_images=args.keep_page_images,
+        )
+        print(json.dumps(cli_summary(result), indent=2))
         return 0
     finally:
-        close = getattr(classifier, "close", None)
-        if callable(close):
-            close()
+        close_clients(openai_client, project_client)
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Split and classify a large insurance claim-file PDF.",
     )
@@ -76,7 +83,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--env-file",
         type=Path,
-        help=_env_file_help(),
+        help=(
+            "Path to a dotenv file. Defaults to python-dotenv's standard .env "
+            "discovery from the current working directory."
+        ),
     )
     parser.add_argument(
         "--project-endpoint",
@@ -89,15 +99,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Azure OpenAI model deployment name. Defaults to AZURE_OPENAI_DEPLOYMENT.",
     )
     parser.add_argument(
-        "--api",
-        choices=("responses", "chat"),
-        default="responses",
-        help="Azure OpenAI API surface used by the OpenAI client.",
-    )
-    parser.add_argument(
         "--batch-size",
         type=int,
-        default=5,
+        default=DEFAULT_BATCH_SIZE,
         help="Number of pages sent to the classifier per model call.",
     )
     parser.add_argument(
@@ -138,40 +142,44 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def load_cli_environment(argv: list[str] | None = None) -> None:
-    env_parser = argparse.ArgumentParser(add_help=False)
-    env_parser.add_argument("--env-file", type=Path)
-    known_args, _ = env_parser.parse_known_args(argv)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--env-file", type=Path)
+    known_args, _ = parser.parse_known_args(argv)
     load_dotenv(dotenv_path=known_args.env_file, override=False)
 
 
-def _env_file_help() -> str:
-    return (
-        "Path to a dotenv file. Defaults to python-dotenv's standard .env "
-        "discovery from the current working directory."
-    )
-
-
-def _build_classifier(args: argparse.Namespace):
-    wants_azure = args.classifier == "azure"
-    can_use_azure = bool(args.project_endpoint and args.deployment)
-
-    if args.classifier == "rules" or (args.classifier == "auto" and not can_use_azure):
-        if args.classifier == "auto" and not can_use_azure:
-            print(
-                "Azure configuration not found; using rule-based classifier. "
-                "Set AZURE_AI_PROJECT_ENDPOINT and AZURE_OPENAI_DEPLOYMENT to use Azure.",
-                file=sys.stderr,
-            )
-        return RuleBasedPageClassifier()
-
-    if wants_azure and not can_use_azure:
+def should_use_azure(args: argparse.Namespace) -> bool:
+    if args.classifier == "rules":
+        return False
+    if args.classifier == "azure" and not (args.project_endpoint and args.deployment):
         raise SystemExit(
             "--classifier azure requires --project-endpoint and --deployment "
             "or AZURE_AI_PROJECT_ENDPOINT and AZURE_OPENAI_DEPLOYMENT."
         )
+    return bool(args.project_endpoint and args.deployment)
 
-    return AzureProjectPageClassifier(
-        project_endpoint=args.project_endpoint,
-        deployment=args.deployment,
-        use_responses_api=args.api == "responses",
-    )
+
+def cli_summary(result: dict) -> dict:
+    return {
+        "source_pdf": str(result["source_pdf"]),
+        "output_dir": str(result["output_dir"]),
+        "manifest_path": str(result["manifest_path"]),
+        "page_count": len(result["pages"]),
+        "document_count": len(result["segments"]),
+        "documents": [
+            {
+                "document_type": written["segment"]["document_type"],
+                "start_page": written["segment"]["start_page"],
+                "end_page": written["segment"]["end_page"],
+                "output_path": str(written["output_path"]),
+            }
+            for written in result["written_documents"]
+        ],
+    }
+
+
+def close_clients(*clients) -> None:
+    for client in clients:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()

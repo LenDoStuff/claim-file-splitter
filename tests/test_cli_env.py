@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from claim_file_splitter.cli import _build_parser, load_cli_environment
+from claim_file_splitter.cli import build_parser, load_cli_environment
 
 
 def test_load_cli_environment_populates_parser_defaults(tmp_path, monkeypatch) -> None:
@@ -18,7 +18,7 @@ def test_load_cli_environment_populates_parser_defaults(tmp_path, monkeypatch) -
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
 
     load_cli_environment(["--env-file", str(env_file)])
-    args = _build_parser().parse_args(["claim.pdf"])
+    args = build_parser().parse_args(["claim.pdf"])
 
     assert (
         args.project_endpoint

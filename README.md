@@ -54,6 +54,29 @@ For a local dry run without Azure:
 claim-file-splitter .\claim-file.pdf --output .\output --classifier rules
 ```
 
+For Python PoC code, call the function directly:
+
+```python
+from claim_file_splitter import split_claim_file
+from claim_file_splitter.classifiers import rule_based_classify_pages
+
+result = split_claim_file(
+    "claim-file.pdf",
+    output_dir="output",
+    classify_pages=rule_based_classify_pages,
+)
+```
+
+## Customization
+
+Project-specific prompts, document categories, output filename prefixes, image detail, batch size, and the structured output schema live in:
+
+```text
+src/claim_file_splitter/customization.py
+```
+
+Edit that file when adapting the PoC to a different claim workflow. The Azure path uses `client.responses.parse(..., text_format=BatchClassificationOutput)` so the model returns typed page decisions instead of free-form JSON.
+
 ## Output
 
 The pipeline writes one PDF per detected logical document and a machine-readable manifest:

@@ -4,11 +4,11 @@ import base64
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from pypdf import PdfReader, PdfWriter
 
-from .models import DOCUMENT_TYPE_PREFIXES, DocumentSegment, PageFeatures, PageImage
-from .models import WrittenDocument
+from .models import DOCUMENT_TYPE_PREFIXES
 
 
 def analyze_pdf(
@@ -16,14 +16,14 @@ def analyze_pdf(
     *,
     max_stored_text_chars: int = 12000,
     use_pdfplumber_fallback: bool = True,
-) -> list[PageFeatures]:
+) -> list[dict[str, Any]]:
     path = Path(input_pdf)
     reader = PdfReader(str(path))
     fallback_texts = (
         _extract_with_pdfplumber(path) if use_pdfplumber_fallback else {}
     )
 
-    pages: list[PageFeatures] = []
+    pages = []
     for index, page in enumerate(reader.pages):
         page_number = index + 1
         text = page.extract_text() or fallback_texts.get(index, "") or ""
@@ -32,47 +32,47 @@ def analyze_pdf(
             text = text[:max_stored_text_chars].rstrip()
         image_count = _count_page_images(page)
         word_count = len(re.findall(r"\w+", text))
-        char_count = len(text)
-        is_image_only = word_count == 0 and image_count > 0
         pages.append(
-            PageFeatures(
-                source_path=path,
-                page_number=page_number,
-                text=text,
-                word_count=word_count,
-                char_count=char_count,
-                image_count=image_count,
-                is_image_only=is_image_only,
-                may_require_ocr=is_image_only,
-            )
+            {
+                "source_path": path,
+                "page_number": page_number,
+                "text": text,
+                "word_count": word_count,
+                "char_count": len(text),
+                "image_count": image_count,
+                "is_image_only": word_count == 0 and image_count > 0,
+                "may_require_ocr": word_count == 0 and image_count > 0,
+                "image": None,
+            }
         )
     return pages
 
 
 def split_pdf(
     input_pdf: str | Path,
-    segments: Iterable[DocumentSegment],
+    segments: Iterable[dict[str, Any]],
     output_dir: str | Path,
-) -> list[WrittenDocument]:
+) -> list[dict[str, Any]]:
     source = Path(input_pdf)
     root = Path(output_dir)
     reader = PdfReader(str(source))
-    written: list[WrittenDocument] = []
+    written = []
     counters: dict[str, int] = {}
 
     for segment in segments:
-        target_dir = root / segment.document_type
+        document_type = segment["document_type"]
+        target_dir = root / document_type
         target_dir.mkdir(parents=True, exist_ok=True)
-        counters[segment.document_type] = counters.get(segment.document_type, 0) + 1
-        prefix = DOCUMENT_TYPE_PREFIXES[segment.document_type]
-        output_path = target_dir / f"{prefix}_{counters[segment.document_type]:03d}.pdf"
+        counters[document_type] = counters.get(document_type, 0) + 1
+        prefix = DOCUMENT_TYPE_PREFIXES[document_type]
+        output_path = target_dir / f"{prefix}_{counters[document_type]:03d}.pdf"
 
         writer = PdfWriter()
-        for page_number in range(segment.start_page, segment.end_page + 1):
+        for page_number in range(segment["start_page"], segment["end_page"] + 1):
             writer.add_page(reader.pages[page_number - 1])
         with output_path.open("wb") as handle:
             writer.write(handle)
-        written.append(WrittenDocument(segment=segment, output_path=output_path))
+        written.append({"segment": segment, "output_path": output_path})
 
     return written
 
@@ -86,7 +86,7 @@ def render_pdf_pages(
     image_format: str = "jpeg",
     jpeg_quality: int = 85,
     keep_paths: bool = False,
-) -> dict[int, PageImage]:
+) -> dict[int, dict[str, Any]]:
     if dpi < 72:
         raise ValueError("dpi must be at least 72.")
 
@@ -104,7 +104,6 @@ def render_pdf_pages(
 
     target_dir = Path(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    source = Path(input_pdf)
 
     try:
         import pypdfium2 as pdfium
@@ -114,8 +113,8 @@ def render_pdf_pages(
             "Install project dependencies with: python -m pip install -e ."
         ) from exc
 
-    rendered: dict[int, PageImage] = {}
-    document = pdfium.PdfDocument(str(source))
+    rendered = {}
+    document = pdfium.PdfDocument(str(input_pdf))
     try:
         page_count = len(document)
         for page_number in page_numbers:
@@ -125,8 +124,7 @@ def render_pdf_pages(
                 )
 
             page = document[page_number - 1]
-            bitmap = page.render(scale=dpi / 72)
-            image = bitmap.to_pil()
+            image = page.render(scale=dpi / 72).to_pil()
             if pil_format == "JPEG":
                 image = image.convert("RGB")
 
@@ -138,19 +136,18 @@ def render_pdf_pages(
             )
             image.save(image_path, format=pil_format, **save_kwargs)
             data = image_path.read_bytes()
-            data_uri = (
-                f"data:{mime_type};base64,"
-                f"{base64.b64encode(data).decode('ascii')}"
-            )
-            rendered[page_number] = PageImage(
-                page_number=page_number,
-                mime_type=mime_type,
-                width_px=image.width,
-                height_px=image.height,
-                byte_size=len(data),
-                data_uri=data_uri,
-                path=image_path if keep_paths else None,
-            )
+            rendered[page_number] = {
+                "page_number": page_number,
+                "mime_type": mime_type,
+                "width_px": image.width,
+                "height_px": image.height,
+                "byte_size": len(data),
+                "data_uri": (
+                    f"data:{mime_type};base64,"
+                    f"{base64.b64encode(data).decode('ascii')}"
+                ),
+                "path": image_path if keep_paths else None,
+            }
     finally:
         close = getattr(document, "close", None)
         if callable(close):
@@ -197,11 +194,10 @@ def _count_page_images(page: object) -> int:
         if xobjects is None:
             return 0
         xobjects = xobjects.get_object()
-        count = 0
-        for xobject in xobjects.values():
-            candidate = xobject.get_object()
-            if candidate.get("/Subtype") == "/Image":
-                count += 1
-        return count
+        return sum(
+            1
+            for xobject in xobjects.values()
+            if xobject.get_object().get("/Subtype") == "/Image"
+        )
     except Exception:
         return 0

@@ -1,78 +1,88 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
-from claim_file_splitter.classifiers import AzureProjectPageClassifier
-from claim_file_splitter.models import PageFeatures, PageImage
+from claim_file_splitter.classifiers import azure_classify_pages
+from claim_file_splitter.customization import BatchClassificationOutput
+from claim_file_splitter.customization import PageDecisionOutput
 
 
-def test_azure_classifier_parses_openai_responses_output_text() -> None:
-    fake_client = _FakeOpenAIClient(
+def test_azure_classifier_uses_responses_parse_with_structured_output() -> None:
+    last_request = {}
+    parsed_output = BatchClassificationOutput(
+        pages=[
+            PageDecisionOutput(
+                page=1,
+                document_type="police_reports",
+                starts_new_document=True,
+                title="Police Report",
+                confidence=0.88,
+                reason="Crash report and officer signals.",
+            )
+        ]
+    )
+    fake_client = fake_openai_client(parsed_output, last_request)
+
+    decisions = azure_classify_pages(
+        fake_client,
+        "claims-model",
+        [page(1, "POLICE REPORT\nOfficer notes")],
+    )
+
+    assert decisions == [
         {
-            "pages": [
-                {
-                    "page": 1,
-                    "document_type": "police_report",
-                    "starts_new_document": True,
-                    "title": "Police Report",
-                    "confidence": 0.88,
-                    "reason": "Crash report and officer signals.",
-                }
-            ]
+            "page_number": 1,
+            "document_type": "police_reports",
+            "starts_new_document": True,
+            "title": "Police Report",
+            "confidence": 0.88,
+            "reason": "Crash report and officer signals.",
         }
-    )
-    classifier = AzureProjectPageClassifier(
-        project_endpoint="https://example.services.ai.azure.com/api/projects/demo",
-        deployment="claims-model",
-        client=fake_client,
-    )
+    ]
+    assert last_request["model"] == "claims-model"
+    assert last_request["text_format"] is BatchClassificationOutput
 
-    decisions = classifier.classify_pages([_page(1, "POLICE REPORT\nOfficer notes")])
-
-    assert len(decisions) == 1
-    assert decisions[0].document_type == "police_reports"
-    assert decisions[0].starts_new_document is True
-    assert decisions[0].confidence == 0.88
-    assert fake_client.responses.last_request["model"] == "claims-model"
-    request_text = json.dumps(fake_client.responses.last_request)
+    request_text = json.dumps(last_request, default=str)
     assert "POLICE REPORT" not in request_text
-    assert "input_image" in request_text
     assert "data:image/jpeg;base64," in request_text
 
-
-class _FakeOpenAIClient:
-    def __init__(self, payload: dict) -> None:
-        self.responses = _FakeResponses(payload)
-
-
-class _FakeResponses:
-    def __init__(self, payload: dict) -> None:
-        self.payload = payload
-        self.last_request: dict | None = None
-
-    def create(self, **kwargs):
-        self.last_request = kwargs
-        return SimpleNamespace(output_text=json.dumps(self.payload))
+    user_content = last_request["input"][1]["content"]
+    assert user_content[0]["type"] == "input_text"
+    assert user_content[1]["type"] == "input_image"
+    assert user_content[1]["detail"] == "high"
+    assert fake_client.responses.create_called is False
+    assert fake_client.chat.completions.create_called is False
 
 
-def _page(page_number: int, text: str) -> PageFeatures:
-    return PageFeatures(
-        source_path=Path("claim.pdf"),
-        page_number=page_number,
-        text=text,
-        word_count=len(text.split()),
-        char_count=len(text),
-        image_count=0,
-        is_image_only=False,
-        may_require_ocr=False,
-        image=PageImage(
-            page_number=page_number,
-            mime_type="image/jpeg",
-            width_px=100,
-            height_px=200,
-            byte_size=12,
-            data_uri="data:image/jpeg;base64,AAAA",
-        ),
-    )
+def fake_openai_client(parsed_output: BatchClassificationOutput, last_request: dict):
+    def parse(**kwargs):
+        last_request.update(kwargs)
+        return SimpleNamespace(output_parsed=parsed_output)
+
+    responses = SimpleNamespace(parse=parse, create_called=False)
+    chat_completions = SimpleNamespace(create_called=False)
+    chat = SimpleNamespace(completions=chat_completions)
+    return SimpleNamespace(responses=responses, chat=chat)
+
+
+def page(page_number: int, text: str) -> dict:
+    return {
+        "source_path": "claim.pdf",
+        "page_number": page_number,
+        "text": text,
+        "word_count": len(text.split()),
+        "char_count": len(text),
+        "image_count": 0,
+        "is_image_only": False,
+        "may_require_ocr": False,
+        "image": {
+            "page_number": page_number,
+            "mime_type": "image/jpeg",
+            "width_px": 100,
+            "height_px": 200,
+            "byte_size": 12,
+            "data_uri": "data:image/jpeg;base64,AAAA",
+            "path": None,
+        },
+    }
