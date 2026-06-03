@@ -42,6 +42,32 @@ DOCUMENT_TYPE_PREFIXES: dict[DocumentType, str] = {
 }
 
 
+@dataclass(frozen=True)
+class PageImage:
+    page_number: int
+    mime_type: str
+    width_px: int
+    height_px: int
+    byte_size: int
+    data_uri: str = field(repr=False)
+    path: Path | None = None
+
+    def to_prompt_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.page_number,
+            "mime_type": self.mime_type,
+            "width_px": self.width_px,
+            "height_px": self.height_px,
+            "byte_size": self.byte_size,
+        }
+
+    def to_manifest_dict(self) -> dict[str, Any]:
+        payload = self.to_prompt_dict()
+        if self.path is not None:
+            payload["path"] = str(self.path)
+        return payload
+
+
 def normalize_document_type(value: str | None) -> DocumentType:
     if not value:
         return "other"
@@ -83,6 +109,7 @@ class PageFeatures:
     image_count: int
     is_image_only: bool
     may_require_ocr: bool
+    image: PageImage | None = None
 
     def to_prompt_dict(self, max_text_chars: int) -> dict[str, Any]:
         text = self.text.strip()
@@ -98,8 +125,14 @@ class PageFeatures:
             "text_excerpt": text,
         }
 
-    def to_manifest_dict(self) -> dict[str, Any]:
+    def to_image_prompt_dict(self) -> dict[str, Any]:
         return {
+            "page": self.page_number,
+            "rendered_image": self.image.to_prompt_dict() if self.image else None,
+        }
+
+    def to_manifest_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "page": self.page_number,
             "word_count": self.word_count,
             "char_count": self.char_count,
@@ -107,6 +140,9 @@ class PageFeatures:
             "is_image_only": self.is_image_only,
             "may_require_ocr": self.may_require_ocr,
         }
+        if self.image is not None:
+            payload["rendered_image"] = self.image.to_manifest_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -172,6 +208,26 @@ class WrittenDocument:
 
 
 @dataclass(frozen=True)
+class ClassificationBatch:
+    batch_number: int
+    start_page: int
+    end_page: int
+    page_numbers: list[int]
+    rolling_context: dict[str, Any]
+    reconciliation_messages: list[str] = field(default_factory=list)
+
+    def to_manifest_dict(self) -> dict[str, Any]:
+        return {
+            "batch_number": self.batch_number,
+            "start_page": self.start_page,
+            "end_page": self.end_page,
+            "page_numbers": self.page_numbers,
+            "rolling_context": self.rolling_context,
+            "reconciliation_messages": self.reconciliation_messages,
+        }
+
+
+@dataclass(frozen=True)
 class SplitResult:
     source_pdf: Path
     output_dir: Path
@@ -180,6 +236,7 @@ class SplitResult:
     segments: list[DocumentSegment]
     written_documents: list[WrittenDocument]
     manifest_path: Path
+    classification_batches: list[ClassificationBatch] = field(default_factory=list)
 
     def to_manifest_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +247,9 @@ class SplitResult:
             "pages": [page.to_manifest_dict() for page in self.pages],
             "page_decisions": [
                 decision.to_manifest_dict() for decision in self.page_decisions
+            ],
+            "classification_batches": [
+                batch.to_manifest_dict() for batch in self.classification_batches
             ],
             "documents": [
                 written.to_manifest_dict() for written in self.written_documents

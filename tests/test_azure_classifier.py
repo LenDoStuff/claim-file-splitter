@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from claim_file_splitter.classifiers import AzureProjectPageClassifier
-from claim_file_splitter.models import PageFeatures
+from claim_file_splitter.models import PageFeatures, PageImage
 
 
 def test_azure_classifier_parses_openai_responses_output_text() -> None:
@@ -36,6 +36,10 @@ def test_azure_classifier_parses_openai_responses_output_text() -> None:
     assert decisions[0].starts_new_document is True
     assert decisions[0].confidence == 0.88
     assert fake_client.responses.last_request["model"] == "claims-model"
+    request_text = json.dumps(fake_client.responses.last_request)
+    assert "POLICE REPORT" not in request_text
+    assert "input_image" in request_text
+    assert "data:image/jpeg;base64," in request_text
 
 
 class _FakeOpenAIClient:
@@ -63,4 +67,12 @@ def _page(page_number: int, text: str) -> PageFeatures:
         image_count=0,
         is_image_only=False,
         may_require_ocr=False,
+        image=PageImage(
+            page_number=page_number,
+            mime_type="image/jpeg",
+            width_px=100,
+            height_px=200,
+            byte_size=12,
+            data_uri="data:image/jpeg;base64,AAAA",
+        ),
     )

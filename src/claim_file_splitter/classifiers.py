@@ -10,17 +10,22 @@ from .models import normalize_document_type
 
 
 class PageClassifier(Protocol):
+    requires_page_images: bool
+
     def classify_pages(
         self,
         pages: Sequence[PageFeatures],
         *,
         previous_page: PageFeatures | None = None,
+        rolling_context: dict[str, Any] | None = None,
     ) -> list[PageDecision]:
         """Return one classification and boundary decision for each page."""
 
 
 class RuleBasedPageClassifier:
     """Deterministic fallback used for tests and credential-free dry runs."""
+
+    requires_page_images = False
 
     _keywords: dict[DocumentType, tuple[str, ...]] = {
         "repair_invoices": (
@@ -91,6 +96,7 @@ class RuleBasedPageClassifier:
         pages: Sequence[PageFeatures],
         *,
         previous_page: PageFeatures | None = None,
+        rolling_context: dict[str, Any] | None = None,
     ) -> list[PageDecision]:
         decisions: list[PageDecision] = []
         previous_type = (
@@ -142,6 +148,8 @@ class RuleBasedPageClassifier:
 class AzureProjectPageClassifier:
     """Classify page batches through an Azure AI Projects OpenAI client."""
 
+    requires_page_images = True
+
     def __init__(
         self,
         *,
@@ -149,11 +157,9 @@ class AzureProjectPageClassifier:
         deployment: str,
         client: Any | None = None,
         use_responses_api: bool = True,
-        max_prompt_chars_per_page: int = 2500,
     ) -> None:
         self.deployment = deployment
         self.use_responses_api = use_responses_api
-        self.max_prompt_chars_per_page = max_prompt_chars_per_page
         self._project_client: Any | None = None
 
         if client is not None:
@@ -180,39 +186,44 @@ class AzureProjectPageClassifier:
         pages: Sequence[PageFeatures],
         *,
         previous_page: PageFeatures | None = None,
+        rolling_context: dict[str, Any] | None = None,
     ) -> list[PageDecision]:
         if not pages:
             return []
 
-        prompt = self._build_prompt(pages, previous_page)
-        raw_response = self._call_model(prompt)
+        missing_images = [page.page_number for page in pages if page.image is None]
+        if missing_images:
+            raise ValueError(
+                "Azure image classification requires rendered page images. "
+                f"Missing images for page(s): {missing_images}"
+            )
+
+        prompt = self._build_prompt(pages, rolling_context)
+        raw_response = self._call_model(prompt, pages)
         payload = _load_json_object(raw_response)
         decisions = _decisions_from_payload(payload)
         return _repair_decision_list(decisions, pages)
 
     def _build_prompt(
-        self, pages: Sequence[PageFeatures], previous_page: PageFeatures | None
+        self,
+        pages: Sequence[PageFeatures],
+        rolling_context: dict[str, Any] | None,
     ) -> str:
-        previous = (
-            previous_page.to_prompt_dict(self.max_prompt_chars_per_page)
-            if previous_page is not None
-            else None
-        )
         payload = {
             "allowed_document_types": list(DOCUMENT_TYPES),
             "instructions": [
-                "Analyze each page summary as part of one insurance claim file.",
-                "Use embedded text and page signals first. Do not assume OCR has been run.",
+                "Analyze the rendered page images as part of one insurance claim file.",
+                "The attached images are the authoritative page input.",
+                "Use only page numbers, image metadata, and rolling context for non-image context.",
                 "Set starts_new_document to true when the page begins a new logical document.",
+                "Set starts_new_document to false when a batch's first page continues the open document from rolling_context.",
                 "Keep multi-page documents together even when headers repeat.",
-                "Classify image-only damage-photo pages as photos when appropriate.",
-                "If an image-only page likely contains scanned text, classify by surrounding context and mention OCR need in the reason.",
+                "Classify damage-photo or image-section pages as photos when appropriate.",
+                "Classify only the pages listed in target_pages, not pages mentioned in rolling_context.",
                 "Return only valid JSON with a top-level pages array.",
             ],
-            "previous_page_context": previous,
-            "pages": [
-                page.to_prompt_dict(self.max_prompt_chars_per_page) for page in pages
-            ],
+            "rolling_context": rolling_context or {},
+            "target_pages": [page.to_image_prompt_dict() for page in pages],
             "response_shape": {
                 "pages": [
                     {
@@ -228,18 +239,32 @@ class AzureProjectPageClassifier:
         }
         return json.dumps(payload, ensure_ascii=True)
 
-    def _call_model(self, prompt: str) -> str:
+    def _call_model(self, prompt: str, pages: Sequence[PageFeatures]) -> str:
         system = (
             "You are a claim-file document boundary detector and classifier. "
             "Return compact, valid JSON only."
         )
+        image_parts = [
+            {"type": "input_image", "image_url": page.image.data_uri}
+            for page in pages
+            if page.image is not None
+        ]
 
         if self.use_responses_api and hasattr(self._client, "responses"):
             response = self._client.responses.create(
                 model=self.deployment,
                 input=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
+                    {
+                        "role": "system",
+                        "content": [{"type": "input_text", "text": system}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            *image_parts,
+                        ],
+                    },
                 ],
                 temperature=0,
             )
@@ -247,11 +272,22 @@ class AzureProjectPageClassifier:
             if text:
                 return text
 
+        chat_image_parts = [
+            {"type": "image_url", "image_url": {"url": page.image.data_uri}}
+            for page in pages
+            if page.image is not None
+        ]
         completion = self._client.chat.completions.create(
             model=self.deployment,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        *chat_image_parts,
+                    ],
+                },
             ],
             temperature=0,
             response_format={"type": "json_object"},

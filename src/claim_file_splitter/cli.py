@@ -6,11 +6,15 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .classifiers import AzureProjectPageClassifier, RuleBasedPageClassifier
 from .pipeline import ClaimFileSplitter, SplitterConfig
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    load_cli_environment(argv)
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -20,6 +24,10 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         max_stored_text_chars=args.max_stored_text_chars,
         use_pdfplumber_fallback=not args.disable_pdfplumber,
+        render_dpi=args.render_dpi,
+        image_format=args.image_format,
+        image_quality=args.image_quality,
+        keep_page_images=args.keep_page_images,
     )
 
     try:
@@ -66,6 +74,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Classifier backend. auto uses Azure when configuration is present.",
     )
     parser.add_argument(
+        "--env-file",
+        type=Path,
+        help=_env_file_help(),
+    )
+    parser.add_argument(
         "--project-endpoint",
         default=os.getenv("AZURE_AI_PROJECT_ENDPOINT"),
         help="Azure AI Foundry project endpoint. Defaults to AZURE_AI_PROJECT_ENDPOINT.",
@@ -84,8 +97,31 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=20,
+        default=5,
         help="Number of pages sent to the classifier per model call.",
+    )
+    parser.add_argument(
+        "--render-dpi",
+        type=int,
+        default=160,
+        help="DPI used when rendering PDF pages to images for Azure classification.",
+    )
+    parser.add_argument(
+        "--image-format",
+        choices=("jpeg", "png"),
+        default="jpeg",
+        help="Rendered page image format for Azure classification.",
+    )
+    parser.add_argument(
+        "--image-quality",
+        type=int,
+        default=85,
+        help="JPEG quality used for rendered page images.",
+    )
+    parser.add_argument(
+        "--keep-page-images",
+        action="store_true",
+        help="Keep rendered page images under output/page_images for inspection.",
     )
     parser.add_argument(
         "--max-stored-text-chars",
@@ -99,6 +135,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable pdfplumber text fallback and use pypdf extraction only.",
     )
     return parser
+
+
+def load_cli_environment(argv: list[str] | None = None) -> None:
+    env_parser = argparse.ArgumentParser(add_help=False)
+    env_parser.add_argument("--env-file", type=Path)
+    known_args, _ = env_parser.parse_known_args(argv)
+    load_dotenv(dotenv_path=known_args.env_file, override=False)
+
+
+def _env_file_help() -> str:
+    return (
+        "Path to a dotenv file. Defaults to python-dotenv's standard .env "
+        "discovery from the current working directory."
+    )
 
 
 def _build_classifier(args: argparse.Namespace):

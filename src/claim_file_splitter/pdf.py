@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Iterable
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
-from .models import DOCUMENT_TYPE_PREFIXES, DocumentSegment, PageFeatures, WrittenDocument
+from .models import DOCUMENT_TYPE_PREFIXES, DocumentSegment, PageFeatures, PageImage
+from .models import WrittenDocument
 
 
 def analyze_pdf(
@@ -73,6 +75,88 @@ def split_pdf(
         written.append(WrittenDocument(segment=segment, output_path=output_path))
 
     return written
+
+
+def render_pdf_pages(
+    input_pdf: str | Path,
+    page_numbers: Iterable[int],
+    output_dir: str | Path,
+    *,
+    dpi: int = 160,
+    image_format: str = "jpeg",
+    jpeg_quality: int = 85,
+    keep_paths: bool = False,
+) -> dict[int, PageImage]:
+    if dpi < 72:
+        raise ValueError("dpi must be at least 72.")
+
+    normalized_format = image_format.strip().lower()
+    if normalized_format in {"jpg", "jpeg"}:
+        extension = "jpg"
+        pil_format = "JPEG"
+        mime_type = "image/jpeg"
+    elif normalized_format == "png":
+        extension = "png"
+        pil_format = "PNG"
+        mime_type = "image/png"
+    else:
+        raise ValueError("image_format must be 'jpeg' or 'png'.")
+
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(input_pdf)
+
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:
+        raise RuntimeError(
+            "Rendering PDF pages as images requires pypdfium2. "
+            "Install project dependencies with: python -m pip install -e ."
+        ) from exc
+
+    rendered: dict[int, PageImage] = {}
+    document = pdfium.PdfDocument(str(source))
+    try:
+        page_count = len(document)
+        for page_number in page_numbers:
+            if page_number < 1 or page_number > page_count:
+                raise ValueError(
+                    f"Page {page_number} is outside PDF page range 1-{page_count}."
+                )
+
+            page = document[page_number - 1]
+            bitmap = page.render(scale=dpi / 72)
+            image = bitmap.to_pil()
+            if pil_format == "JPEG":
+                image = image.convert("RGB")
+
+            image_path = target_dir / f"page_{page_number:06d}.{extension}"
+            save_kwargs = (
+                {"quality": jpeg_quality, "optimize": True}
+                if pil_format == "JPEG"
+                else {}
+            )
+            image.save(image_path, format=pil_format, **save_kwargs)
+            data = image_path.read_bytes()
+            data_uri = (
+                f"data:{mime_type};base64,"
+                f"{base64.b64encode(data).decode('ascii')}"
+            )
+            rendered[page_number] = PageImage(
+                page_number=page_number,
+                mime_type=mime_type,
+                width_px=image.width,
+                height_px=image.height,
+                byte_size=len(data),
+                data_uri=data_uri,
+                path=image_path if keep_paths else None,
+            )
+    finally:
+        close = getattr(document, "close", None)
+        if callable(close):
+            close()
+
+    return rendered
 
 
 def _extract_with_pdfplumber(path: Path) -> dict[int, str]:
