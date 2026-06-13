@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .customization import ClaimSplitterConfig, category_names
+from .customization import ClaimSplitterConfig
 
 
 DOCUMENT_TYPE_ALIASES = {
@@ -106,7 +106,7 @@ def normalize_document_type(
     value: str | None,
     config: ClaimSplitterConfig,
 ) -> str:
-    configured_names = set(category_names(config))
+    configured_names = {category.name for category in config.categories}
     if not value:
         return config.default_document_type
 
@@ -135,25 +135,6 @@ def make_decision(
     }
 
 
-def image_prompt_metadata(image: dict[str, Any] | None) -> dict[str, Any] | None:
-    if image is None:
-        return None
-    return {
-        "page": image["page_number"],
-        "mime_type": image["mime_type"],
-        "width_px": image["width_px"],
-        "height_px": image["height_px"],
-        "byte_size": image["byte_size"],
-    }
-
-
-def page_image_prompt(page: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "page": page["page_number"],
-        "rendered_image": image_prompt_metadata(page.get("image")),
-    }
-
-
 def segment_manifest(segment: dict[str, Any]) -> dict[str, Any]:
     return {
         "segment_id": segment["segment_id"],
@@ -166,63 +147,6 @@ def segment_manifest(segment: dict[str, Any]) -> dict[str, Any]:
         "confidence": round(segment["confidence"], 4),
         "reasons": segment["reasons"],
     }
-
-
-def typed_result(raw: dict[str, Any]) -> ClaimSplitResult:
-    segments = [typed_segment(segment) for segment in raw["segments"]]
-    segment_by_id = {segment.segment_id: segment for segment in segments}
-    documents = [
-        WrittenDocument(
-            segment=segment_by_id[written["segment"]["segment_id"]],
-            output_path=written["output_path"],
-        )
-        for written in raw["written_documents"]
-    ]
-    return ClaimSplitResult(
-        source_pdf=raw["source_pdf"],
-        output_dir=raw["output_dir"],
-        manifest_path=raw["manifest_path"],
-        pages=[typed_page(page) for page in raw["pages"]],
-        page_decisions=[
-            PageDecision.model_validate(decision)
-            for decision in raw["page_decisions"]
-        ],
-        classification_batches=[
-            ClassificationBatch.model_validate(batch)
-            for batch in raw["classification_batches"]
-        ],
-        segments=segments,
-        documents=documents,
-    )
-
-
-def typed_segment(segment: dict[str, Any]) -> DocumentSegment:
-    return DocumentSegment(
-        **segment_manifest(segment),
-    )
-
-
-def typed_page(page: dict[str, Any]) -> PageAnalysis:
-    rendered_image = None
-    if page.get("image") is not None:
-        image = page["image"]
-        rendered_image = PageImage(
-            page_number=image["page_number"],
-            mime_type=image["mime_type"],
-            width_px=image["width_px"],
-            height_px=image["height_px"],
-            byte_size=image["byte_size"],
-            path=image.get("path"),
-        )
-    return PageAnalysis(
-        page_number=page["page_number"],
-        word_count=page["word_count"],
-        char_count=page["char_count"],
-        image_count=page["image_count"],
-        is_image_only=page["is_image_only"],
-        may_require_ocr=page["may_require_ocr"],
-        rendered_image=rendered_image,
-    )
 
 
 def result_manifest(result: ClaimSplitResult) -> dict[str, Any]:

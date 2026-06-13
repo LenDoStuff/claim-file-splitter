@@ -16,8 +16,8 @@ images with structured output:
 client.responses.parse(..., text_format=make_batch_classification_output_model(config))
 ```
 
-Tests should use explicit fake classifiers or injected fake Azure clients when
-Azure credentials are not available.
+Tests should use injected fake Azure clients when Azure credentials are not
+available, so they exercise the same structured-output path as production.
 
 ## Important Files
 

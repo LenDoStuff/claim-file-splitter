@@ -5,13 +5,13 @@ from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable
+from typing import Any
 
 from .classifiers import azure_classify_pages, make_azure_openai_client
-from .customization import ClaimSplitterConfig, category_prefixes, default_config
-from .customization import resolve_config
-from .models import ClaimSplitResult, make_decision, result_manifest
-from .models import segment_manifest, typed_result
+from .customization import ClaimSplitterConfig, resolve_config
+from .models import ClaimSplitResult, ClassificationBatch, DocumentSegment
+from .models import PageAnalysis, PageDecision, PageImage, WrittenDocument
+from .models import result_manifest, segment_manifest
 from .pdf import analyze_pdf, render_pdf_pages, split_pdf
 
 
@@ -45,7 +45,8 @@ def split_claim_file_azure(
         keep_page_images=keep_page_images,
         max_stored_text_chars=max_stored_text_chars,
     )
-    if not active_config.azure.deployment:
+    deployment_name = active_config.azure.deployment
+    if not deployment_name:
         raise ValueError(
             "Azure deployment is required. Pass deployment, set it in config, "
             "or set AZURE_OPENAI_DEPLOYMENT."
@@ -64,35 +65,25 @@ def split_claim_file_azure(
                 active_config.azure.project_endpoint
             )
 
-        def classify_pages(batch, *, previous_page=None, rolling_context=None):
-            return azure_classify_pages(
-                openai_client,
-                active_config.azure.deployment,
-                batch,
-                config=active_config,
-                previous_page=previous_page,
-                rolling_context=rolling_context,
-            )
-
-        return run_split_pipeline(
+        return _run_azure_split_pipeline(
             input_pdf,
             output_dir=output_dir,
             config=active_config,
-            classify_pages=classify_pages,
-            requires_page_images=True,
+            client=openai_client,
+            deployment=deployment_name,
         )
     finally:
         if client is None:
             close_clients(openai_client, project_client)
 
 
-def run_split_pipeline(
+def _run_azure_split_pipeline(
     input_pdf: str | Path,
     *,
     output_dir: str | Path,
     config: ClaimSplitterConfig,
-    classify_pages: Callable[..., list[dict[str, Any]]],
-    requires_page_images: bool,
+    client: Any,
+    deployment: str,
 ) -> ClaimSplitResult:
     source_pdf = Path(input_pdf)
     if not source_pdf.exists():
@@ -109,19 +100,17 @@ def run_split_pipeline(
     )
 
     with ExitStack() as stack:
-        render_dir = None
-        if requires_page_images:
-            render_dir = (
-                output_path / "page_images"
-                if config.rendering.keep_page_images
-                else Path(stack.enter_context(TemporaryDirectory()))
-            )
+        render_dir = (
+            output_path / "page_images"
+            if config.rendering.keep_page_images
+            else Path(stack.enter_context(TemporaryDirectory()))
+        )
 
-        page_decisions, pages, classification_batches = classify_page_batches(
+        page_decisions, pages, classification_batches = _classify_page_batches(
             source_pdf,
             pages,
-            classify_pages=classify_pages,
-            requires_page_images=requires_page_images,
+            client=client,
+            deployment=deployment,
             render_dir=render_dir,
             config=config,
         )
@@ -130,20 +119,42 @@ def run_split_pipeline(
             source_pdf,
             segments,
             output_path,
-            category_prefixes(config),
+            {
+                category.name: category.filename_prefix
+                for category in config.categories
+            },
         )
 
-        raw_result = {
-            "source_pdf": source_pdf,
-            "output_dir": output_path,
-            "pages": pages,
-            "page_decisions": page_decisions,
-            "classification_batches": classification_batches,
-            "segments": segments,
-            "written_documents": written_documents,
-            "manifest_path": output_path / "manifest.json",
+        result_segments = [
+            DocumentSegment(**segment_manifest(segment))
+            for segment in segments
+        ]
+        segments_by_id = {
+            segment.segment_id: segment
+            for segment in result_segments
         }
-        result = typed_result(raw_result)
+        result = ClaimSplitResult(
+            source_pdf=source_pdf,
+            output_dir=output_path,
+            manifest_path=output_path / "manifest.json",
+            pages=[page_analysis_from_dict(page) for page in pages],
+            page_decisions=[
+                PageDecision.model_validate(decision)
+                for decision in page_decisions
+            ],
+            classification_batches=[
+                ClassificationBatch.model_validate(batch)
+                for batch in classification_batches
+            ],
+            segments=result_segments,
+            documents=[
+                WrittenDocument(
+                    segment=segments_by_id[written["segment"]["segment_id"]],
+                    output_path=written["output_path"],
+                )
+                for written in written_documents
+            ],
+        )
         result.manifest_path.write_text(
             json.dumps(result_manifest(result), indent=2),
             encoding="utf-8",
@@ -151,13 +162,13 @@ def run_split_pipeline(
         return result
 
 
-def classify_page_batches(
+def _classify_page_batches(
     source_pdf: Path,
     pages: list[dict[str, Any]],
     *,
-    classify_pages: Callable[..., list[dict[str, Any]]],
-    requires_page_images: bool,
-    render_dir: Path | None,
+    client: Any,
+    deployment: str,
+    render_dir: Path,
     config: ClaimSplitterConfig,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     decisions = []
@@ -167,25 +178,26 @@ def classify_page_batches(
         batch = pages[start : start + config.splitter.batch_size]
         rolling_context = build_rolling_context(decisions, config)
 
-        if requires_page_images:
-            rendered_images = render_pdf_pages(
-                source_pdf,
-                [page["page_number"] for page in batch],
-                render_dir,
-                dpi=config.rendering.dpi,
-                image_format=config.rendering.image_format,
-                jpeg_quality=config.rendering.image_quality,
-                keep_paths=config.rendering.keep_page_images,
-            )
-            batch = [
-                {**page, "image": rendered_images[page["page_number"]]}
-                for page in batch
-            ]
-            pages[start : start + len(batch)] = batch
+        rendered_images = render_pdf_pages(
+            source_pdf,
+            [page["page_number"] for page in batch],
+            render_dir,
+            dpi=config.rendering.dpi,
+            image_format=config.rendering.image_format,
+            jpeg_quality=config.rendering.image_quality,
+            keep_paths=config.rendering.keep_page_images,
+        )
+        batch = [
+            {**page, "image": rendered_images[page["page_number"]]}
+            for page in batch
+        ]
+        pages[start : start + len(batch)] = batch
 
-        batch_decisions = classify_pages(
+        batch_decisions = azure_classify_pages(
+            client,
+            deployment,
             batch,
-            previous_page=pages[start - 1] if start > 0 else None,
+            config=config,
             rolling_context=rolling_context,
         )
         batch_decisions, reconciliation_messages = reconcile_batch_boundary(
@@ -205,14 +217,13 @@ def classify_page_batches(
             }
         )
 
-    return dedupe_and_sort_decisions(decisions, pages, config), pages, batches
+    return decisions, pages, batches
 
 
 def build_rolling_context(
     decisions: list[dict[str, Any]],
-    config: ClaimSplitterConfig | None = None,
+    config: ClaimSplitterConfig,
 ) -> dict[str, Any]:
-    active_config = config or default_config()
     if not decisions:
         return {
             "open_document": None,
@@ -221,10 +232,10 @@ def build_rolling_context(
             "document_type_counts": {},
         }
 
-    segments = build_segments(decisions, active_config)
+    segments = build_segments(decisions, config)
     document_type_counts = Counter(segment["document_type"] for segment in segments)
-    recent_limit = active_config.splitter.recent_page_decision_limit
-    completed_limit = active_config.splitter.completed_document_limit
+    recent_limit = config.splitter.recent_page_decision_limit
+    completed_limit = config.splitter.completed_document_limit
     recent_decisions = [] if recent_limit == 0 else decisions[-recent_limit:]
     completed_segments = [] if completed_limit == 0 else segments[:-1][-completed_limit:]
     return {
@@ -241,9 +252,8 @@ def build_rolling_context(
 def reconcile_batch_boundary(
     batch_decisions: list[dict[str, Any]],
     accumulated_decisions: list[dict[str, Any]],
-    config: ClaimSplitterConfig | None = None,
+    config: ClaimSplitterConfig,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    active_config = config or default_config()
     if not batch_decisions or not accumulated_decisions:
         return batch_decisions, []
 
@@ -265,7 +275,7 @@ def reconcile_batch_boundary(
             messages.append(reason)
     elif (
         first["confidence"]
-        < active_config.splitter.high_confidence_batch_boundary
+        < config.splitter.high_confidence_batch_boundary
     ):
         reason = (
             "Batch boundary reconciliation: low-confidence new boundary on first "
@@ -289,15 +299,14 @@ def reconcile_batch_boundary(
 
 def build_segments(
     page_decisions: list[dict[str, Any]],
-    config: ClaimSplitterConfig | None = None,
+    config: ClaimSplitterConfig,
 ) -> list[dict[str, Any]]:
-    active_config = config or default_config()
     segments = []
     current = []
 
     for decision in sorted(page_decisions, key=lambda item: item["page_number"]):
         starts = decision["starts_new_document"]
-        if current and should_force_boundary(current[-1], decision, active_config):
+        if current and should_force_boundary(current[-1], decision, config):
             starts = True
 
         if current and starts:
@@ -312,53 +321,45 @@ def build_segments(
     return segments
 
 
-def dedupe_and_sort_decisions(
-    decisions: list[dict[str, Any]],
-    pages: list[dict[str, Any]],
-    config: ClaimSplitterConfig,
-) -> list[dict[str, Any]]:
-    by_page = {decision["page_number"]: decision for decision in decisions}
-    repaired = []
-    for page in pages:
-        decision = by_page.get(page["page_number"])
-        if decision is None:
-            document_type = (
-                "photos"
-                if page["is_image_only"]
-                and any(category.name == "photos" for category in config.categories)
-                else config.default_document_type
-            )
-            decision = make_decision(
-                page["page_number"],
-                document_type,
-                page["page_number"] == 1,
-                config=config,
-                confidence=0.2,
-                reason="Missing classifier decision.",
-            )
-        if page["page_number"] == 1 and not decision["starts_new_document"]:
-            decision = {**decision, "starts_new_document": True}
-        repaired.append(decision)
-    return repaired
+def page_analysis_from_dict(page: dict[str, Any]) -> PageAnalysis:
+    rendered_image = None
+    if page.get("image") is not None:
+        image = page["image"]
+        rendered_image = PageImage(
+            page_number=image["page_number"],
+            mime_type=image["mime_type"],
+            width_px=image["width_px"],
+            height_px=image["height_px"],
+            byte_size=image["byte_size"],
+            path=image.get("path"),
+        )
+    return PageAnalysis(
+        page_number=page["page_number"],
+        word_count=page["word_count"],
+        char_count=page["char_count"],
+        image_count=page["image_count"],
+        is_image_only=page["is_image_only"],
+        may_require_ocr=page["may_require_ocr"],
+        rendered_image=rendered_image,
+    )
 
 
 def should_force_boundary(
     previous: dict[str, Any],
     current: dict[str, Any],
-    config: ClaimSplitterConfig | None = None,
+    config: ClaimSplitterConfig,
 ) -> bool:
-    active_config = config or default_config()
     if current["document_type"] == previous["document_type"]:
         return False
     if (
-        current["document_type"] == active_config.default_document_type
-        or previous["document_type"] == active_config.default_document_type
+        current["document_type"] == config.default_document_type
+        or previous["document_type"] == config.default_document_type
     ):
         return current["confidence"] >= (
-            active_config.splitter.other_type_boundary_confidence
+            config.splitter.other_type_boundary_confidence
         )
     return current["confidence"] >= (
-        active_config.splitter.type_change_boundary_confidence
+        config.splitter.type_change_boundary_confidence
     )
 
 

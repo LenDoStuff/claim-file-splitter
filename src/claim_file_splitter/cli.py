@@ -15,23 +15,19 @@ def main(argv: list[str] | None = None) -> int:
     load_cli_environment(argv)
     args = build_parser().parse_args(argv)
 
-    common_kwargs = {
-        "output_dir": args.output,
-        "config_path": args.config,
-        "batch_size": args.batch_size,
-        "render_dpi": args.render_dpi,
-        "image_format": args.image_format,
-        "image_quality": args.image_quality,
-        "keep_page_images": True if args.keep_page_images else None,
-        "max_stored_text_chars": args.max_stored_text_chars,
-    }
-
     result = split_claim_file_azure(
         args.input_pdf,
+        output_dir=args.output,
+        config_path=args.config,
         project_endpoint=args.project_endpoint,
         deployment=args.deployment,
+        batch_size=args.batch_size,
+        render_dpi=args.render_dpi,
+        image_format=args.image_format,
+        image_quality=args.image_quality,
         image_detail=args.image_detail,
-        **common_kwargs,
+        keep_page_images=True if args.keep_page_images else None,
+        max_stored_text_chars=args.max_stored_text_chars,
     )
 
     print(json.dumps(cli_summary(result), indent=2))

@@ -5,7 +5,7 @@ import os
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic import create_model
@@ -172,7 +172,7 @@ class ClaimSplitterConfig(BaseModel):
         return self
 
 
-class PageDecisionOutputBase(BaseModel):
+class _PageDecisionOutputBase(BaseModel):
     page: int = Field(description="The one-based source PDF page number.")
     starts_new_document: bool = Field(
         description="True when this page starts a new logical document."
@@ -184,14 +184,6 @@ class PageDecisionOutputBase(BaseModel):
         description="Confidence from 0 to 1 for this page decision.",
     )
     reason: str = Field(description="Short reason for the boundary/type decision.")
-
-
-def default_config() -> ClaimSplitterConfig:
-    return ClaimSplitterConfig()
-
-
-def load_config(path: str | Path) -> ClaimSplitterConfig:
-    return ClaimSplitterConfig.model_validate(load_config_dict(path))
 
 
 def load_config_dict(path: str | Path) -> dict[str, Any]:
@@ -216,7 +208,7 @@ def resolve_config(
     keep_page_images: bool | None = None,
     max_stored_text_chars: int | None = None,
 ) -> ClaimSplitterConfig:
-    payload = default_config().model_dump(mode="python")
+    payload = ClaimSplitterConfig().model_dump(mode="python")
     merge_config(payload, env_config_dict())
     if config_path is not None:
         merge_config(payload, load_config_dict(config_path))
@@ -256,30 +248,37 @@ def config_override_dict(config: ClaimSplitterConfig | dict[str, Any]) -> dict[s
     raise TypeError("config must be a ClaimSplitterConfig or dict.")
 
 
-def direct_override_dict(**kwargs: Any) -> dict[str, Any]:
+def direct_override_dict(
+    *,
+    project_endpoint: str | None,
+    deployment: str | None,
+    batch_size: int | None,
+    render_dpi: int | None,
+    image_format: str | None,
+    image_quality: int | None,
+    image_detail: str | None,
+    keep_page_images: bool | None,
+    max_stored_text_chars: int | None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"azure": {}, "splitter": {}, "rendering": {}}
-    if kwargs["project_endpoint"] is not None:
-        payload["azure"]["project_endpoint"] = kwargs["project_endpoint"]
-    if kwargs["deployment"] is not None:
-        payload["azure"]["deployment"] = kwargs["deployment"]
-    if kwargs["batch_size"] is not None:
-        payload["splitter"]["batch_size"] = kwargs["batch_size"]
-    if kwargs["max_stored_text_chars"] is not None:
-        payload["splitter"]["max_stored_text_chars"] = kwargs["max_stored_text_chars"]
-    if kwargs["render_dpi"] is not None:
-        payload["rendering"]["dpi"] = kwargs["render_dpi"]
-    if kwargs["image_format"] is not None:
-        payload["rendering"]["image_format"] = kwargs["image_format"]
-    if kwargs["image_quality"] is not None:
-        payload["rendering"]["image_quality"] = kwargs["image_quality"]
-    if kwargs["image_detail"] is not None:
-        payload["rendering"]["image_detail"] = kwargs["image_detail"]
-    if kwargs["keep_page_images"] is not None:
-        payload["rendering"]["keep_page_images"] = kwargs["keep_page_images"]
-    return remove_empty_dicts(payload)
-
-
-def remove_empty_dicts(payload: dict[str, Any]) -> dict[str, Any]:
+    if project_endpoint is not None:
+        payload["azure"]["project_endpoint"] = project_endpoint
+    if deployment is not None:
+        payload["azure"]["deployment"] = deployment
+    if batch_size is not None:
+        payload["splitter"]["batch_size"] = batch_size
+    if max_stored_text_chars is not None:
+        payload["splitter"]["max_stored_text_chars"] = max_stored_text_chars
+    if render_dpi is not None:
+        payload["rendering"]["dpi"] = render_dpi
+    if image_format is not None:
+        payload["rendering"]["image_format"] = image_format
+    if image_quality is not None:
+        payload["rendering"]["image_quality"] = image_quality
+    if image_detail is not None:
+        payload["rendering"]["image_detail"] = image_detail
+    if keep_page_images is not None:
+        payload["rendering"]["keep_page_images"] = keep_page_images
     return {
         key: value
         for key, value in payload.items()
@@ -299,27 +298,6 @@ def merge_config(base: dict[str, Any], override: dict[str, Any]) -> None:
             base[key] = value
 
 
-def category_names(config: ClaimSplitterConfig) -> list[str]:
-    return [category.name for category in config.categories]
-
-
-def category_prefixes(config: ClaimSplitterConfig) -> dict[str, str]:
-    return {
-        category.name: category.filename_prefix
-        for category in config.categories
-    }
-
-
-def category_prompt_items(config: ClaimSplitterConfig) -> list[dict[str, str]]:
-    return [
-        {
-            "name": category.name,
-            "description": category.description,
-        }
-        for category in config.categories
-    ]
-
-
 def make_batch_classification_output_model(config: ClaimSplitterConfig) -> type[BaseModel]:
     document_type = Enum(
         "DocumentType",
@@ -328,7 +306,7 @@ def make_batch_classification_output_model(config: ClaimSplitterConfig) -> type[
     )
     page_decision_output = create_model(
         "PageDecisionOutput",
-        __base__=PageDecisionOutputBase,
+        __base__=_PageDecisionOutputBase,
         document_type=(
             document_type,
             Field(description="The configured document category for this page."),
@@ -338,7 +316,3 @@ def make_batch_classification_output_model(config: ClaimSplitterConfig) -> type[
         "BatchClassificationOutput",
         pages=(list[page_decision_output], Field(default_factory=list)),
     )
-
-
-BatchClassificationOutput = make_batch_classification_output_model(default_config())
-PageDecisionOutput = get_args(BatchClassificationOutput.model_fields["pages"].annotation)[0]

@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from pypdf import PdfReader
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from claim_file_splitter.customization import ClaimSplitterConfig
+from claim_file_splitter import split_claim_file_azure
 from claim_file_splitter.models import ClaimSplitResult
-from claim_file_splitter.models import make_decision
 from claim_file_splitter.customization import resolve_config
-from claim_file_splitter.pipeline import run_split_pipeline
 
 
 def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> None:
@@ -22,12 +21,21 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     config = resolve_config(
         batch_size=2,
     )
-    result = run_split_pipeline(
+    result = split_claim_file_azure(
         source_pdf,
         output_dir=output_dir,
         config=config,
-        classify_pages=sample_claim_classifier(config),
-        requires_page_images=False,
+        deployment="claims-model",
+        client=fake_openai_client(
+            {
+                1: decision("repair_invoices", True, title="Page 1"),
+                2: decision("repair_invoices", False, title="Page 2"),
+                3: decision("appraisals", True, title="Page 3"),
+                4: decision("communications", True, title="Page 4"),
+                5: decision("payments", True, title="Page 5"),
+                6: decision("legal_correspondence", True, title="Page 6"),
+            }
+        ),
     )
 
     assert isinstance(result, ClaimSplitResult)
@@ -108,12 +116,21 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
     config = resolve_config(
         config_path=config_path,
     )
-    result = run_split_pipeline(
+    result = split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
         config=config,
-        classify_pages=configured_category_classifier(config),
-        requires_page_images=False,
+        deployment="claims-model",
+        client=fake_openai_client(
+            {
+                1: decision("shop_bills", True),
+                2: decision("shop_bills", False),
+                3: decision("misc", True),
+                4: decision("misc", False),
+                5: decision("misc", False),
+                6: decision("misc", False),
+            }
+        ),
     )
 
     assert {segment.document_type for segment in result.segments} == {
@@ -128,16 +145,22 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
 def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_numbered_claim_pdf(source_pdf, page_count=5)
-    config = ClaimSplitterConfig.model_validate(
-        {"splitter": {"batch_size": 2}}
-    )
+    config = resolve_config(batch_size=2)
 
-    result = run_split_pipeline(
+    result = split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
         config=config,
-        classify_pages=single_document_classifier(config),
-        requires_page_images=False,
+        deployment="claims-model",
+        client=fake_openai_client(
+            {
+                1: decision("other", True),
+                2: decision("other", False),
+                3: decision("other", False),
+                4: decision("other", False),
+                5: decision("other", False),
+            }
+        ),
     )
 
     assert [batch.page_numbers for batch in result.classification_batches] == [
@@ -178,12 +201,19 @@ def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> No
         config_path=config_path,
         batch_size=5,
     )
-    result = run_split_pipeline(
+    result = split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
         config=config,
-        classify_pages=invoice_payment_classifier(config),
-        requires_page_images=False,
+        deployment="claims-model",
+        client=fake_openai_client(
+            {
+                1: decision("repair_invoices", True, title="Repair Invoice"),
+                2: decision("repair_invoices", False, title="Repair Invoice"),
+                3: decision("repair_invoices", False, title="Repair Invoice"),
+                4: decision("payments", True, title="Payment"),
+            }
+        ),
     )
 
     invoice = result.documents[0]
@@ -263,80 +293,34 @@ def _write_text_pdf(path: Path, pages: list[list[str]]) -> None:
     pdf.save()
 
 
-def sample_claim_classifier(config: ClaimSplitterConfig):
-    page_types = {
-        1: ("repair_invoices", True),
-        2: ("repair_invoices", False),
-        3: ("appraisals", True),
-        4: ("communications", True),
-        5: ("payments", True),
-        6: ("legal_correspondence", True),
+def decision(
+    document_type: str,
+    starts_new_document: bool,
+    *,
+    title: str = "",
+    confidence: float = 0.9,
+    reason: str = "Test classifier decision.",
+) -> dict:
+    return {
+        "document_type": document_type,
+        "starts_new_document": starts_new_document,
+        "title": title,
+        "confidence": confidence,
+        "reason": reason,
     }
 
-    def classify_pages(batch, *, previous_page=None, rolling_context=None):
-        return [
-            make_decision(
-                page["page_number"],
-                page_types[page["page_number"]][0],
-                page_types[page["page_number"]][1],
-                config=config,
-                title=f"Page {page['page_number']}",
-                confidence=0.9,
-                reason="Test classifier decision.",
-            )
-            for page in batch
+
+def fake_openai_client(decisions_by_page: dict[int, dict]):
+    def parse(**kwargs):
+        prompt = json.loads(kwargs["input"][1]["content"][0]["text"])
+        parsed_pages = [
+            {
+                "page": page["page"],
+                **decisions_by_page[page["page"]],
+            }
+            for page in prompt["target_pages"]
         ]
+        parsed_output = kwargs["text_format"].model_validate({"pages": parsed_pages})
+        return SimpleNamespace(output_parsed=parsed_output)
 
-    return classify_pages
-
-
-def configured_category_classifier(config: ClaimSplitterConfig):
-    def classify_pages(batch, *, previous_page=None, rolling_context=None):
-        return [
-            make_decision(
-                page["page_number"],
-                "shop_bills" if page["page_number"] <= 2 else "misc",
-                page["page_number"] in {1, 3},
-                config=config,
-                confidence=0.9,
-                reason="Test classifier decision.",
-            )
-            for page in batch
-        ]
-
-    return classify_pages
-
-
-def single_document_classifier(config: ClaimSplitterConfig):
-    def classify_pages(batch, *, previous_page=None, rolling_context=None):
-        return [
-            make_decision(
-                page["page_number"],
-                "other",
-                page["page_number"] == 1,
-                config=config,
-                confidence=0.8,
-                reason="Test classifier decision.",
-            )
-            for page in batch
-        ]
-
-    return classify_pages
-
-
-def invoice_payment_classifier(config: ClaimSplitterConfig):
-    def classify_pages(batch, *, previous_page=None, rolling_context=None):
-        return [
-            make_decision(
-                page["page_number"],
-                "repair_invoices" if page["page_number"] <= 3 else "payments",
-                page["page_number"] in {1, 4},
-                config=config,
-                title="Repair Invoice" if page["page_number"] <= 3 else "Payment",
-                confidence=0.95,
-                reason="Test classifier decision.",
-            )
-            for page in batch
-        ]
-
-    return classify_pages
+    return SimpleNamespace(responses=SimpleNamespace(parse=parse))

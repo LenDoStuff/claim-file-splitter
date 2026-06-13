@@ -6,14 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .customization import ClaimSplitterConfig, category_prompt_items
-from .customization import default_config, make_batch_classification_output_model
-from .models import make_decision, normalize_document_type, page_image_prompt
-
-
-def image_only_document_type(config: ClaimSplitterConfig) -> str:
-    names = {category.name for category in config.categories}
-    return "photos" if "photos" in names else config.default_document_type
+from .customization import ClaimSplitterConfig, make_batch_classification_output_model
+from .models import make_decision, normalize_document_type
 
 
 def make_azure_openai_client(project_endpoint: str) -> tuple[Any, Any]:
@@ -32,11 +26,9 @@ def azure_classify_pages(
     deployment: str,
     pages: Sequence[dict[str, Any]],
     *,
-    config: ClaimSplitterConfig | None = None,
-    previous_page: dict[str, Any] | None = None,
+    config: ClaimSplitterConfig,
     rolling_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    active_config = config or default_config()
     missing_images = [page["page_number"] for page in pages if page.get("image") is None]
     if missing_images:
         raise ValueError(
@@ -44,18 +36,18 @@ def azure_classify_pages(
             f"Missing images for page(s): {missing_images}"
         )
 
-    prompt = build_azure_prompt(pages, rolling_context, active_config)
-    text_format = make_batch_classification_output_model(active_config)
+    prompt = build_azure_prompt(pages, rolling_context, config)
+    text_format = make_batch_classification_output_model(config)
     parsed = call_azure_model(
         client,
         deployment,
         prompt,
         pages,
-        config=active_config,
+        config=config,
         text_format=text_format,
     )
-    decisions = decisions_from_structured_output(parsed, active_config)
-    return repair_decision_list(decisions, pages, active_config)
+    decisions = decisions_from_structured_output(parsed, config)
+    return repair_decision_list(decisions, pages, config)
 
 
 def build_azure_prompt(
@@ -65,13 +57,37 @@ def build_azure_prompt(
 ) -> str:
     return json.dumps(
         {
-            "allowed_document_types": category_prompt_items(config),
+            "allowed_document_types": [
+                {
+                    "name": category.name,
+                    "description": category.description,
+                }
+                for category in config.categories
+            ],
             "instructions": config.prompts.user_prompt,
             "rolling_context": rolling_context or {},
-            "target_pages": [page_image_prompt(page) for page in pages],
+            "target_pages": [
+                {
+                    "page": page["page_number"],
+                    "rendered_image": page_prompt_image_metadata(page.get("image")),
+                }
+                for page in pages
+            ],
         },
         ensure_ascii=True,
     )
+
+
+def page_prompt_image_metadata(image: dict[str, Any] | None) -> dict[str, Any] | None:
+    if image is None:
+        return None
+    return {
+        "page": image["page_number"],
+        "mime_type": image["mime_type"],
+        "width_px": image["width_px"],
+        "height_px": image["height_px"],
+        "byte_size": image["byte_size"],
+    }
 
 
 def call_azure_model(
@@ -147,9 +163,15 @@ def repair_decision_list(
     for page in pages:
         decision = by_page.get(page["page_number"])
         if decision is None:
+            document_type = (
+                "photos"
+                if page["is_image_only"]
+                and any(category.name == "photos" for category in config.categories)
+                else config.default_document_type
+            )
             decision = make_decision(
                 page["page_number"],
-                image_only_document_type(config) if page["is_image_only"] else config.default_document_type,
+                document_type,
                 False,
                 config=config,
                 title=first_line(page["text"]),
