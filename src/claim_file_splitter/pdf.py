@@ -13,18 +13,14 @@ def analyze_pdf(
     input_pdf: str | Path,
     *,
     max_stored_text_chars: int = 12000,
-    use_pdfplumber_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     path = Path(input_pdf)
     reader = PdfReader(str(path))
-    fallback_texts = (
-        _extract_with_pdfplumber(path) if use_pdfplumber_fallback else {}
-    )
 
     pages = []
     for index, page in enumerate(reader.pages):
         page_number = index + 1
-        text = page.extract_text() or fallback_texts.get(index, "") or ""
+        text = page.extract_text() or ""
         text = _clean_text(text)
         if len(text) > max_stored_text_chars:
             text = text[:max_stored_text_chars].rstrip()
@@ -153,22 +149,6 @@ def render_pdf_pages(
             close()
 
     return rendered
-
-
-def _extract_with_pdfplumber(path: Path) -> dict[int, str]:
-    try:
-        import pdfplumber
-    except ImportError:
-        return {}
-
-    texts: dict[int, str] = {}
-    try:
-        with pdfplumber.open(str(path)) as pdf:
-            for index, page in enumerate(pdf.pages):
-                texts[index] = page.extract_text() or ""
-    except Exception:
-        return {}
-    return texts
 
 
 def _clean_text(text: str) -> str:

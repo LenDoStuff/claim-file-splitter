@@ -116,6 +116,13 @@ def test_category_config_rejects_obsolete_rule_keywords() -> None:
         )
 
 
+def test_splitter_config_rejects_pdfplumber_fallback() -> None:
+    with pytest.raises(ValidationError):
+        ClaimSplitterConfig.model_validate(
+            {"splitter": {"use_pdfplumber_fallback": False}}
+        )
+
+
 def test_public_azure_api_returns_typed_result_with_injected_client(
     tmp_path: Path,
 ) -> None:
@@ -129,12 +136,14 @@ def test_public_azure_api_returns_typed_result_with_injected_client(
         output_dir=tmp_path / "output",
         deployment="claims-model",
         client=fake_client,
-        use_pdfplumber_fallback=False,
     )
 
     assert isinstance(result, ClaimSplitResult)
     assert result.document_count == 1
     assert result.documents[0].segment.document_type == "police_reports"
+    assert result.documents[0].segment.summary == (
+        "Police Report Crash report and officer signals."
+    )
     assert result.documents[0].output_path.exists()
 
 

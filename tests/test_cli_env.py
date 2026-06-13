@@ -83,8 +83,20 @@ def test_cli_config_loads_json_and_flags_override_values(
             output_dir=Path(kwargs["output_dir"]),
             manifest_path=Path(kwargs["output_dir"]) / "manifest.json",
             page_count=0,
-            document_count=0,
-            documents=[],
+            document_count=1,
+            documents=[
+                SimpleNamespace(
+                    segment=SimpleNamespace(
+                        document_type="repair_invoices",
+                        start_page=1,
+                        end_page=2,
+                        summary="Repair invoice summary.",
+                    ),
+                    output_path=Path(kwargs["output_dir"])
+                    / "repair_invoices"
+                    / "repair_invoice_001.pdf",
+                )
+            ],
         )
 
     monkeypatch.setattr(cli, "split_claim_file_azure", fake_split_claim_file_azure)
@@ -98,16 +110,14 @@ def test_cli_config_loads_json_and_flags_override_values(
             str(output_dir),
             "--batch-size",
             "1",
-            "--disable-pdfplumber",
         ]
     )
 
     assert exit_code == 0
     summary = json.loads(capsys.readouterr().out)
-    assert summary["document_count"] == 0
+    assert summary["documents"][0]["summary"] == "Repair invoice summary."
     assert captured["config_path"] == config_path
     assert captured["batch_size"] == 1
-    assert captured["use_pdfplumber_fallback"] is False
     assert captured["output_dir"] == str(output_dir)
 
 

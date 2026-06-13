@@ -73,6 +73,7 @@ class DocumentSegment(BaseModel):
     end_page: int
     page_count: int
     title: str
+    summary: str
     confidence: float
     reasons: list[str] = Field(default_factory=list)
 
@@ -161,6 +162,7 @@ def segment_manifest(segment: dict[str, Any]) -> dict[str, Any]:
         "end_page": segment["end_page"],
         "page_count": segment["end_page"] - segment["start_page"] + 1,
         "title": segment["title"],
+        "summary": segment["summary"],
         "confidence": round(segment["confidence"], 4),
         "reasons": segment["reasons"],
     }

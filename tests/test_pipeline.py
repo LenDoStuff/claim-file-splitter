@@ -21,7 +21,6 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     output_dir = tmp_path / "output"
     config = resolve_config(
         batch_size=2,
-        use_pdfplumber_fallback=False,
     )
     result = run_split_pipeline(
         source_pdf,
@@ -74,6 +73,9 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["page_count"] == 6
     assert manifest["document_count"] == 5
+    assert manifest["documents"][0]["summary"] == (
+        "Page 1 Test classifier decision."
+    )
     assert manifest["documents"][0]["output_path"].endswith("repair_invoice_001.pdf")
 
 
@@ -105,7 +107,6 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
 
     config = resolve_config(
         config_path=config_path,
-        use_pdfplumber_fallback=False,
     )
     result = run_split_pipeline(
         source_pdf,
@@ -128,7 +129,7 @@ def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_numbered_claim_pdf(source_pdf, page_count=5)
     config = ClaimSplitterConfig.model_validate(
-        {"splitter": {"batch_size": 2, "use_pdfplumber_fallback": False}}
+        {"splitter": {"batch_size": 2}}
     )
 
     result = run_split_pipeline(
@@ -176,7 +177,6 @@ def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> No
     config = resolve_config(
         config_path=config_path,
         batch_size=5,
-        use_pdfplumber_fallback=False,
     )
     result = run_split_pipeline(
         source_pdf,
@@ -190,8 +190,10 @@ def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> No
     payment = result.documents[1]
     assert invoice.segment.document_type == "repair_invoices"
     assert invoice.segment.page_count == 3
+    assert invoice.segment.summary == "Repair Invoice Test classifier decision."
     assert payment.segment.document_type == "payments"
     assert payment.segment.page_count == 1
+    assert payment.segment.summary == "Payment Test classifier decision."
 
     invoice_reader = PdfReader(str(invoice.output_path))
     payment_reader = PdfReader(str(payment.output_path))

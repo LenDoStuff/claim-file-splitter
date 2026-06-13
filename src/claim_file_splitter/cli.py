@@ -24,7 +24,6 @@ def main(argv: list[str] | None = None) -> int:
         "image_quality": args.image_quality,
         "keep_page_images": True if args.keep_page_images else None,
         "max_stored_text_chars": args.max_stored_text_chars,
-        "use_pdfplumber_fallback": False if args.disable_pdfplumber else None,
     }
 
     result = split_claim_file_azure(
@@ -104,11 +103,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Maximum extracted text retained per page before classification.",
     )
-    parser.add_argument(
-        "--disable-pdfplumber",
-        action="store_true",
-        help="Disable pdfplumber text fallback and use pypdf extraction only.",
-    )
     return parser
 
 
@@ -131,6 +125,7 @@ def cli_summary(result) -> dict:
                 "document_type": document.segment.document_type,
                 "start_page": document.segment.start_page,
                 "end_page": document.segment.end_page,
+                "summary": document.segment.summary,
                 "output_path": str(document.output_path),
             }
             for document in result.documents

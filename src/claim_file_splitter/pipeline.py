@@ -30,7 +30,6 @@ def split_claim_file_azure(
     image_detail: str | None = None,
     keep_page_images: bool | None = None,
     max_stored_text_chars: int | None = None,
-    use_pdfplumber_fallback: bool | None = None,
     client: Any | None = None,
 ) -> ClaimSplitResult:
     active_config = resolve_config(
@@ -45,7 +44,6 @@ def split_claim_file_azure(
         image_detail=image_detail,
         keep_page_images=keep_page_images,
         max_stored_text_chars=max_stored_text_chars,
-        use_pdfplumber_fallback=use_pdfplumber_fallback,
     )
     if not active_config.azure.deployment:
         raise ValueError(
@@ -108,7 +106,6 @@ def run_split_pipeline(
     pages = analyze_pdf(
         source_pdf,
         max_stored_text_chars=config.splitter.max_stored_text_chars,
-        use_pdfplumber_fallback=config.splitter.use_pdfplumber_fallback,
     )
 
     with ExitStack() as stack:
@@ -378,6 +375,7 @@ def segment_from_decisions(
         "start_page": decisions[0]["page_number"],
         "end_page": decisions[-1]["page_number"],
         "title": first_title(decisions) or document_type.replace("_", " ").title(),
+        "summary": summarize_segment(decisions, document_type),
         "confidence": sum(decision["confidence"] for decision in decisions)
         / len(decisions),
         "reasons": reasons,
@@ -400,6 +398,20 @@ def first_title(decisions: list[dict[str, Any]]) -> str:
         if decision["title"].strip():
             return decision["title"].strip()
     return ""
+
+
+def summarize_segment(decisions: list[dict[str, Any]], document_type: str) -> str:
+    title = first_title(decisions)
+    reasons = unique_reasons(decisions, limit=2)
+    parts = [part for part in [title, *reasons] if part]
+    if parts:
+        return " ".join(parts)
+    start_page = decisions[0]["page_number"]
+    end_page = decisions[-1]["page_number"]
+    label = document_type.replace("_", " ").title()
+    if start_page == end_page:
+        return f"{label} on page {start_page}."
+    return f"{label} covering pages {start_page}-{end_page}."
 
 
 def append_reason(existing: str, addition: str) -> str:

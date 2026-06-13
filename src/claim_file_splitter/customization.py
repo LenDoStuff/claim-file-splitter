@@ -74,6 +74,8 @@ DEFAULT_USER_PROMPT = (
 
 
 class AzureConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     project_endpoint: str | None = None
     deployment: str | None = None
     temperature: float = 0.0
@@ -110,11 +112,15 @@ class CategoryConfig(BaseModel):
 
 
 class PromptConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     user_prompt: str = DEFAULT_USER_PROMPT
 
 
 class SplitterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     batch_size: int = Field(default=5, ge=1)
     recent_page_decision_limit: int = Field(default=5, ge=0)
     completed_document_limit: int = Field(default=3, ge=0)
@@ -122,10 +128,11 @@ class SplitterConfig(BaseModel):
     other_type_boundary_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     type_change_boundary_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     max_stored_text_chars: int = Field(default=12000, ge=0)
-    use_pdfplumber_fallback: bool = True
 
 
 class RenderingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     dpi: int = Field(default=160, ge=72)
     image_format: str = "jpeg"
     image_quality: int = Field(default=85, ge=1, le=100)
@@ -142,6 +149,8 @@ class RenderingConfig(BaseModel):
 
 
 class ClaimSplitterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     azure: AzureConfig = Field(default_factory=AzureConfig)
     categories: list[CategoryConfig] = Field(
         default_factory=lambda: [CategoryConfig(**item) for item in DEFAULT_CATEGORIES]
@@ -206,7 +215,6 @@ def resolve_config(
     image_detail: str | None = None,
     keep_page_images: bool | None = None,
     max_stored_text_chars: int | None = None,
-    use_pdfplumber_fallback: bool | None = None,
 ) -> ClaimSplitterConfig:
     payload = default_config().model_dump(mode="python")
     merge_config(payload, env_config_dict())
@@ -226,7 +234,6 @@ def resolve_config(
             image_detail=image_detail,
             keep_page_images=keep_page_images,
             max_stored_text_chars=max_stored_text_chars,
-            use_pdfplumber_fallback=use_pdfplumber_fallback,
         ),
     )
     return ClaimSplitterConfig.model_validate(payload)
@@ -259,10 +266,6 @@ def direct_override_dict(**kwargs: Any) -> dict[str, Any]:
         payload["splitter"]["batch_size"] = kwargs["batch_size"]
     if kwargs["max_stored_text_chars"] is not None:
         payload["splitter"]["max_stored_text_chars"] = kwargs["max_stored_text_chars"]
-    if kwargs["use_pdfplumber_fallback"] is not None:
-        payload["splitter"]["use_pdfplumber_fallback"] = kwargs[
-            "use_pdfplumber_fallback"
-        ]
     if kwargs["render_dpi"] is not None:
         payload["rendering"]["dpi"] = kwargs["render_dpi"]
     if kwargs["image_format"] is not None:
