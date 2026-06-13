@@ -99,6 +99,23 @@ def test_dynamic_structured_output_accepts_only_configured_categories() -> None:
         )
 
 
+def test_category_config_rejects_obsolete_rule_keywords() -> None:
+    with pytest.raises(ValidationError):
+        ClaimSplitterConfig.model_validate(
+            {
+                "categories": [
+                    {
+                        "name": "bills",
+                        "filename_prefix": "bill",
+                        "rule_keywords": ["invoice"],
+                    },
+                    {"name": "misc", "filename_prefix": "misc"},
+                ],
+                "default_document_type": "misc",
+            }
+        )
+
+
 def test_public_azure_api_returns_typed_result_with_injected_client(
     tmp_path: Path,
 ) -> None:

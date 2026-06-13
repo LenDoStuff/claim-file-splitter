@@ -9,7 +9,9 @@ from reportlab.pdfgen import canvas
 
 from claim_file_splitter.customization import ClaimSplitterConfig
 from claim_file_splitter.models import ClaimSplitResult
-from claim_file_splitter.pipeline import split_claim_file_rules
+from claim_file_splitter.models import make_decision
+from claim_file_splitter.customization import resolve_config
+from claim_file_splitter.pipeline import run_split_pipeline
 
 
 def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> None:
@@ -17,11 +19,16 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     _write_sample_claim_pdf(source_pdf)
 
     output_dir = tmp_path / "output"
-    result = split_claim_file_rules(
-        source_pdf,
-        output_dir=output_dir,
+    config = resolve_config(
         batch_size=2,
         use_pdfplumber_fallback=False,
+    )
+    result = run_split_pipeline(
+        source_pdf,
+        output_dir=output_dir,
+        config=config,
+        classify_pages=sample_claim_classifier(config),
+        requires_page_images=False,
     )
 
     assert isinstance(result, ClaimSplitResult)
@@ -82,13 +89,11 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
                         "name": "shop_bills",
                         "filename_prefix": "shop_bill",
                         "description": "Configured shop bills.",
-                        "rule_keywords": ["repair invoice", "body shop"],
                     },
                     {
                         "name": "misc",
                         "filename_prefix": "misc_doc",
                         "description": "Configured fallback.",
-                        "rule_keywords": [],
                     },
                 ],
                 "default_document_type": "misc",
@@ -98,11 +103,16 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    result = split_claim_file_rules(
-        source_pdf,
-        output_dir=tmp_path / "output",
+    config = resolve_config(
         config_path=config_path,
         use_pdfplumber_fallback=False,
+    )
+    result = run_split_pipeline(
+        source_pdf,
+        output_dir=tmp_path / "output",
+        config=config,
+        classify_pages=configured_category_classifier(config),
+        requires_page_images=False,
     )
 
     assert {segment.document_type for segment in result.segments} == {
@@ -117,13 +127,16 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
 def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_numbered_claim_pdf(source_pdf, page_count=5)
-    config = ClaimSplitterConfig.model_validate({"splitter": {"batch_size": 2}})
+    config = ClaimSplitterConfig.model_validate(
+        {"splitter": {"batch_size": 2, "use_pdfplumber_fallback": False}}
+    )
 
-    result = split_claim_file_rules(
+    result = run_split_pipeline(
         source_pdf,
         output_dir=tmp_path / "output",
         config=config,
-        use_pdfplumber_fallback=False,
+        classify_pages=single_document_classifier(config),
+        requires_page_images=False,
     )
 
     assert [batch.page_numbers for batch in result.classification_batches] == [
@@ -144,17 +157,14 @@ def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> No
                     {
                         "name": "repair_invoices",
                         "filename_prefix": "repair_invoice",
-                        "rule_keywords": ["claim file page 1", "claim file page 2", "claim file page 3"],
                     },
                     {
                         "name": "payments",
                         "filename_prefix": "payment_document",
-                        "rule_keywords": ["claim file page 4"],
                     },
                     {
                         "name": "other",
                         "filename_prefix": "document",
-                        "rule_keywords": [],
                     },
                 ],
                 "default_document_type": "other",
@@ -163,12 +173,17 @@ def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    result = split_claim_file_rules(
-        source_pdf,
-        output_dir=tmp_path / "output",
+    config = resolve_config(
         config_path=config_path,
         batch_size=5,
         use_pdfplumber_fallback=False,
+    )
+    result = run_split_pipeline(
+        source_pdf,
+        output_dir=tmp_path / "output",
+        config=config,
+        classify_pages=invoice_payment_classifier(config),
+        requires_page_images=False,
     )
 
     invoice = result.documents[0]
@@ -244,3 +259,82 @@ def _write_text_pdf(path: Path, pages: list[list[str]]) -> None:
             y -= 18
         pdf.showPage()
     pdf.save()
+
+
+def sample_claim_classifier(config: ClaimSplitterConfig):
+    page_types = {
+        1: ("repair_invoices", True),
+        2: ("repair_invoices", False),
+        3: ("appraisals", True),
+        4: ("communications", True),
+        5: ("payments", True),
+        6: ("legal_correspondence", True),
+    }
+
+    def classify_pages(batch, *, previous_page=None, rolling_context=None):
+        return [
+            make_decision(
+                page["page_number"],
+                page_types[page["page_number"]][0],
+                page_types[page["page_number"]][1],
+                config=config,
+                title=f"Page {page['page_number']}",
+                confidence=0.9,
+                reason="Test classifier decision.",
+            )
+            for page in batch
+        ]
+
+    return classify_pages
+
+
+def configured_category_classifier(config: ClaimSplitterConfig):
+    def classify_pages(batch, *, previous_page=None, rolling_context=None):
+        return [
+            make_decision(
+                page["page_number"],
+                "shop_bills" if page["page_number"] <= 2 else "misc",
+                page["page_number"] in {1, 3},
+                config=config,
+                confidence=0.9,
+                reason="Test classifier decision.",
+            )
+            for page in batch
+        ]
+
+    return classify_pages
+
+
+def single_document_classifier(config: ClaimSplitterConfig):
+    def classify_pages(batch, *, previous_page=None, rolling_context=None):
+        return [
+            make_decision(
+                page["page_number"],
+                "other",
+                page["page_number"] == 1,
+                config=config,
+                confidence=0.8,
+                reason="Test classifier decision.",
+            )
+            for page in batch
+        ]
+
+    return classify_pages
+
+
+def invoice_payment_classifier(config: ClaimSplitterConfig):
+    def classify_pages(batch, *, previous_page=None, rolling_context=None):
+        return [
+            make_decision(
+                page["page_number"],
+                "repair_invoices" if page["page_number"] <= 3 else "payments",
+                page["page_number"] in {1, 4},
+                config=config,
+                title="Repair Invoice" if page["page_number"] <= 3 else "Payment",
+                confidence=0.95,
+                reason="Test classifier decision.",
+            )
+            for page in batch
+        ]
+
+    return classify_pages

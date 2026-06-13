@@ -8,7 +8,6 @@ from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 from .classifiers import azure_classify_pages, make_azure_openai_client
-from .classifiers import rule_based_classify_pages
 from .customization import ClaimSplitterConfig, category_prefixes, default_config
 from .customization import resolve_config
 from .models import ClaimSplitResult, make_decision, result_manifest
@@ -87,49 +86,6 @@ def split_claim_file_azure(
     finally:
         if client is None:
             close_clients(openai_client, project_client)
-
-
-def split_claim_file_rules(
-    input_pdf: str | Path,
-    *,
-    output_dir: str | Path = "output",
-    config: ClaimSplitterConfig | dict[str, Any] | None = None,
-    config_path: str | Path | None = None,
-    batch_size: int | None = None,
-    render_dpi: int | None = None,
-    image_format: str | None = None,
-    image_quality: int | None = None,
-    keep_page_images: bool | None = None,
-    max_stored_text_chars: int | None = None,
-    use_pdfplumber_fallback: bool | None = None,
-) -> ClaimSplitResult:
-    active_config = resolve_config(
-        config=config,
-        config_path=config_path,
-        batch_size=batch_size,
-        render_dpi=render_dpi,
-        image_format=image_format,
-        image_quality=image_quality,
-        keep_page_images=keep_page_images,
-        max_stored_text_chars=max_stored_text_chars,
-        use_pdfplumber_fallback=use_pdfplumber_fallback,
-    )
-
-    def classify_pages(batch, *, previous_page=None, rolling_context=None):
-        return rule_based_classify_pages(
-            batch,
-            config=active_config,
-            previous_page=previous_page,
-            rolling_context=rolling_context,
-        )
-
-    return run_split_pipeline(
-        input_pdf,
-        output_dir=output_dir,
-        config=active_config,
-        classify_pages=classify_pages,
-        requires_page_images=False,
-    )
 
 
 def run_split_pipeline(

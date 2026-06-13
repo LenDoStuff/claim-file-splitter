@@ -16,8 +16,8 @@ images with structured output:
 client.responses.parse(..., text_format=make_batch_classification_output_model(config))
 ```
 
-The rule-based classifier is kept for local smoke runs and tests without Azure
-credentials; it is not the main library API.
+Tests should use explicit fake classifiers or injected fake Azure clients when
+Azure credentials are not available.
 
 ## Important Files
 
@@ -27,7 +27,7 @@ credentials; it is not the main library API.
 - `src/claim_file_splitter/models.py`
   - Pydantic public result models and small internal conversion helpers.
 - `src/claim_file_splitter/classifiers.py`
-  - Azure structured-output classifier and local rule-based classifier.
+  - Azure structured-output classifier.
 - `src/claim_file_splitter/pipeline.py`
   - Page batching, rolling context, boundary reconciliation, segment building,
     and orchestration.
@@ -63,12 +63,6 @@ Check CLI help:
 
 ```powershell
 python -m claim_file_splitter --help
-```
-
-Local rule-based smoke run:
-
-```powershell
-claim-file-splitter .\claim-file.pdf --output .\output --classifier rules
 ```
 
 Azure run:

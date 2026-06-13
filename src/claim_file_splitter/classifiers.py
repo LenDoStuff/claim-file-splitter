@@ -8,72 +8,7 @@ from pydantic import BaseModel
 
 from .customization import ClaimSplitterConfig, category_prompt_items
 from .customization import default_config, make_batch_classification_output_model
-from .customization import rule_keywords
 from .models import make_decision, normalize_document_type, page_image_prompt
-
-
-def rule_based_classify_pages(
-    pages: Sequence[dict[str, Any]],
-    *,
-    config: ClaimSplitterConfig | None = None,
-    previous_page: dict[str, Any] | None = None,
-    rolling_context: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    active_config = config or default_config()
-    decisions = []
-    previous_type = (
-        classify_page_by_rules(previous_page, active_config)[0]
-        if previous_page
-        else None
-    )
-
-    for page in pages:
-        document_type, confidence, reason = classify_page_by_rules(page, active_config)
-        starts_new_document = page["page_number"] == 1 or previous_type is None
-        if previous_type is not None and document_type != previous_type:
-            starts_new_document = True
-
-        decisions.append(
-            make_decision(
-                page["page_number"],
-                document_type,
-                starts_new_document,
-                config=active_config,
-                title=first_line(page["text"]),
-                confidence=confidence,
-                reason=reason,
-            )
-        )
-        previous_type = document_type
-
-    return decisions
-
-
-def classify_page_by_rules(
-    page: dict[str, Any],
-    config: ClaimSplitterConfig,
-) -> tuple[str, float, str]:
-    if page["is_image_only"]:
-        return image_only_document_type(config), 0.55, (
-            "Image-only page with no extractable text."
-        )
-
-    text = page["text"].lower()
-    scores = {
-        document_type: sum(1 for keyword in keywords if keyword in text)
-        for document_type, keywords in rule_keywords(config).items()
-    }
-    scores = {document_type: score for document_type, score in scores.items() if score}
-    if not scores:
-        return config.default_document_type, 0.25, (
-            "No strong claim-document keywords matched."
-        )
-
-    document_type = max(scores, key=scores.get)
-    score = scores[document_type]
-    return document_type, min(0.95, 0.45 + (score * 0.12)), (
-        f"Matched {score} keyword signal(s)."
-    )
 
 
 def image_only_document_type(config: ClaimSplitterConfig) -> str:

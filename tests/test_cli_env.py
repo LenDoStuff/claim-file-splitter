@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-
+import claim_file_splitter.cli as cli
 from claim_file_splitter.cli import build_parser, load_cli_environment, main
 from claim_file_splitter.customization import resolve_config
 
@@ -66,21 +65,33 @@ def test_direct_args_override_config_file_and_env(tmp_path, monkeypatch) -> None
 def test_cli_config_loads_json_and_flags_override_values(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ) -> None:
-    source_pdf = tmp_path / "claim.pdf"
-    _write_pdf(source_pdf, page_count=3)
     config_path = tmp_path / "splitter.json"
     config_path.write_text(
         json.dumps({"splitter": {"batch_size": 3}}),
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
+    captured = {}
+
+    def fake_split_claim_file_azure(input_pdf, **kwargs):
+        captured["input_pdf"] = input_pdf
+        captured.update(kwargs)
+        return SimpleNamespace(
+            source_pdf=Path(input_pdf),
+            output_dir=Path(kwargs["output_dir"]),
+            manifest_path=Path(kwargs["output_dir"]) / "manifest.json",
+            page_count=0,
+            document_count=0,
+            documents=[],
+        )
+
+    monkeypatch.setattr(cli, "split_claim_file_azure", fake_split_claim_file_azure)
 
     exit_code = main(
         [
-            str(source_pdf),
-            "--classifier",
-            "rules",
+            "claim.pdf",
             "--config",
             str(config_path),
             "--output",
@@ -93,25 +104,14 @@ def test_cli_config_loads_json_and_flags_override_values(
 
     assert exit_code == 0
     summary = json.loads(capsys.readouterr().out)
-    manifest = json.loads(
-        Path(summary["manifest_path"]).read_text(encoding="utf-8")
-    )
-    assert [batch["page_numbers"] for batch in manifest["classification_batches"]] == [
-        [1],
-        [2],
-        [3],
-    ]
+    assert summary["document_count"] == 0
+    assert captured["config_path"] == config_path
+    assert captured["batch_size"] == 1
+    assert captured["use_pdfplumber_fallback"] is False
+    assert captured["output_dir"] == str(output_dir)
 
 
 def test_build_parser_accepts_config_option() -> None:
     args = build_parser().parse_args(["claim.pdf", "--config", "splitter.json"])
 
     assert args.config == Path("splitter.json")
-
-
-def _write_pdf(path: Path, page_count: int) -> None:
-    pdf = canvas.Canvas(str(path), pagesize=letter)
-    for page_number in range(1, page_count + 1):
-        pdf.drawString(72, 740, f"Claim file page {page_number}")
-        pdf.showPage()
-    pdf.save()

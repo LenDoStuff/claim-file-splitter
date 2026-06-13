@@ -70,14 +70,12 @@ and image rendering:
     {
       "name": "repair_invoices",
       "filename_prefix": "repair_invoice",
-      "description": "Repair invoices and body shop bills.",
-      "rule_keywords": ["repair invoice", "body shop", "amount due"]
+      "description": "Repair invoices and body shop bills."
     },
     {
       "name": "other",
       "filename_prefix": "document",
-      "description": "Fallback category.",
-      "rule_keywords": []
+      "description": "Fallback category."
     }
   ],
   "default_document_type": "other",
@@ -128,12 +126,6 @@ claim-file-splitter .\claim-file.pdf `
   --keep-page-images
 ```
 
-Local rule-based smoke run without Azure:
-
-```powershell
-claim-file-splitter .\claim-file.pdf --output .\output --classifier rules
-```
-
 ## Output
 
 The module writes one PDF per detected logical document and a manifest:
@@ -153,7 +145,7 @@ The folder names and filename prefixes come from the active config categories.
 
 ## How It Works
 
-1. Reads the source PDF page by page and keeps embedded text for local smoke runs.
+1. Reads the source PDF page by page and collects page metadata.
 2. Renders Azure-classified PDF pages to images locally.
 3. Sends batches of target page images to the Azure OpenAI client from
    `AIProjectClient.get_openai_client()`.

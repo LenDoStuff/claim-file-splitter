@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .pipeline import split_claim_file_azure, split_claim_file_rules
+from .pipeline import split_claim_file_azure
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,16 +27,13 @@ def main(argv: list[str] | None = None) -> int:
         "use_pdfplumber_fallback": False if args.disable_pdfplumber else None,
     }
 
-    if args.classifier == "rules":
-        result = split_claim_file_rules(args.input_pdf, **common_kwargs)
-    else:
-        result = split_claim_file_azure(
-            args.input_pdf,
-            project_endpoint=args.project_endpoint,
-            deployment=args.deployment,
-            image_detail=args.image_detail,
-            **common_kwargs,
-        )
+    result = split_claim_file_azure(
+        args.input_pdf,
+        project_endpoint=args.project_endpoint,
+        deployment=args.deployment,
+        image_detail=args.image_detail,
+        **common_kwargs,
+    )
 
     print(json.dumps(cli_summary(result), indent=2))
     return 0
@@ -56,12 +53,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         help="Path to a JSON splitter configuration file.",
-    )
-    parser.add_argument(
-        "--classifier",
-        choices=("azure", "rules"),
-        default="azure",
-        help="Classifier backend. Azure is the primary module path.",
     )
     parser.add_argument(
         "--env-file",

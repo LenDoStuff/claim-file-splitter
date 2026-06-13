@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, get_args
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic import create_model
 
 
@@ -16,107 +16,46 @@ DEFAULT_CATEGORIES = [
         "name": "repair_invoices",
         "filename_prefix": "repair_invoice",
         "description": "Repair invoices, body shop bills, parts, labor, and amount due pages.",
-        "rule_keywords": [
-            "repair invoice",
-            "auto repair",
-            "body shop",
-            "parts",
-            "labor",
-            "amount due",
-            "invoice number",
-        ],
     },
     {
         "name": "appraisals",
         "filename_prefix": "appraisal",
         "description": "Appraisals, valuation reports, and damage estimates.",
-        "rule_keywords": [
-            "appraisal",
-            "valuation",
-            "estimate of damages",
-            "damage estimate",
-            "vehicle value",
-        ],
     },
     {
         "name": "communications",
         "filename_prefix": "communication",
         "description": "Emails, letters, claim notes, and general communications.",
-        "rule_keywords": [
-            "from:",
-            "to:",
-            "sent:",
-            "subject:",
-            "email thread",
-            "dear ",
-            "regards",
-        ],
     },
     {
         "name": "police_reports",
         "filename_prefix": "police_report",
         "description": "Police, incident, crash, and officer reports.",
-        "rule_keywords": [
-            "police report",
-            "incident report",
-            "crash report",
-            "officer",
-            "case number",
-            "department",
-        ],
     },
     {
         "name": "photos",
         "filename_prefix": "photo_section",
         "description": "Photos, photo logs, and image-only damage sections.",
-        "rule_keywords": ["photograph", "photo log", "image section", "scene photos"],
     },
     {
         "name": "payments",
         "filename_prefix": "payment_document",
         "description": "Payment notices, checks, remittances, and settlement payments.",
-        "rule_keywords": [
-            "payment",
-            "check number",
-            "paid",
-            "remittance",
-            "settlement payment",
-            "payment notice",
-        ],
     },
     {
         "name": "medical",
         "filename_prefix": "medical_document",
         "description": "Medical records, treatment notes, and provider documents.",
-        "rule_keywords": [
-            "medical",
-            "patient",
-            "diagnosis",
-            "treatment",
-            "physician",
-            "hospital",
-            "clinic",
-        ],
     },
     {
         "name": "legal_correspondence",
         "filename_prefix": "legal_correspondence",
         "description": "Attorney letters, legal demands, and litigation correspondence.",
-        "rule_keywords": [
-            "law office",
-            "attorney",
-            "legal",
-            "demand letter",
-            "counsel",
-            "litigation",
-            "subpoena",
-        ],
     },
     {
         "name": "other",
         "filename_prefix": "document",
         "description": "Fallback category for pages that do not match configured categories.",
-        "rule_keywords": [],
     },
 ]
 
@@ -141,10 +80,11 @@ class AzureConfig(BaseModel):
 
 
 class CategoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     filename_prefix: str
     description: str = ""
-    rule_keywords: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -363,13 +303,6 @@ def category_names(config: ClaimSplitterConfig) -> list[str]:
 def category_prefixes(config: ClaimSplitterConfig) -> dict[str, str]:
     return {
         category.name: category.filename_prefix
-        for category in config.categories
-    }
-
-
-def rule_keywords(config: ClaimSplitterConfig) -> dict[str, tuple[str, ...]]:
-    return {
-        category.name: tuple(category.rule_keywords)
         for category in config.categories
     }
 
