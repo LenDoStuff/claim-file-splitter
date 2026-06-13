@@ -10,7 +10,6 @@ from reportlab.pdfgen import canvas
 
 from claim_file_splitter import split_claim_file_azure
 from claim_file_splitter.models import ClaimSplitResult
-from claim_file_splitter.customization import resolve_config
 
 
 def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> None:
@@ -18,14 +17,11 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     _write_sample_claim_pdf(source_pdf)
 
     output_dir = tmp_path / "output"
-    config = resolve_config(
-        batch_size=2,
-    )
     result = split_claim_file_azure(
         source_pdf,
         output_dir=output_dir,
-        config=config,
         deployment="claims-model",
+        batch_size=2,
         client=fake_openai_client(
             {
                 1: decision("repair_invoices", True, title="Page 1"),
@@ -87,40 +83,29 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     assert manifest["documents"][0]["output_path"].endswith("repair_invoice_001.pdf")
 
 
-def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -> None:
+def test_direct_categories_replace_defaults_and_filename_prefixes(
+    tmp_path: Path,
+) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_sample_claim_pdf(source_pdf)
-    config_path = tmp_path / "splitter.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "categories": [
-                    {
-                        "name": "shop_bills",
-                        "filename_prefix": "shop_bill",
-                        "description": "Configured shop bills.",
-                    },
-                    {
-                        "name": "misc",
-                        "filename_prefix": "misc_doc",
-                        "description": "Configured fallback.",
-                    },
-                ],
-                "default_document_type": "misc",
-                "splitter": {"batch_size": 10},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = resolve_config(
-        config_path=config_path,
-    )
     result = split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
-        config=config,
         deployment="claims-model",
+        categories=[
+            {
+                "name": "shop_bills",
+                "filename_prefix": "shop_bill",
+                "description": "Configured shop bills.",
+            },
+            {
+                "name": "misc",
+                "filename_prefix": "misc_doc",
+                "description": "Configured fallback.",
+            },
+        ],
+        default_document_type="misc",
+        batch_size=10,
         client=fake_openai_client(
             {
                 1: decision("shop_bills", True),
@@ -145,13 +130,12 @@ def test_json_config_replaces_categories_and_filename_prefixes(tmp_path: Path) -
 def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_numbered_claim_pdf(source_pdf, page_count=5)
-    config = resolve_config(batch_size=2)
 
     result = split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
-        config=config,
         deployment="claims-model",
+        batch_size=2,
         client=fake_openai_client(
             {
                 1: decision("other", True),
@@ -173,39 +157,26 @@ def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
 def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_numbered_claim_pdf(source_pdf, page_count=4)
-    config_path = tmp_path / "splitter.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "categories": [
-                    {
-                        "name": "repair_invoices",
-                        "filename_prefix": "repair_invoice",
-                    },
-                    {
-                        "name": "payments",
-                        "filename_prefix": "payment_document",
-                    },
-                    {
-                        "name": "other",
-                        "filename_prefix": "document",
-                    },
-                ],
-                "default_document_type": "other",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = resolve_config(
-        config_path=config_path,
-        batch_size=5,
-    )
     result = split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
-        config=config,
         deployment="claims-model",
+        categories=[
+            {
+                "name": "repair_invoices",
+                "filename_prefix": "repair_invoice",
+            },
+            {
+                "name": "payments",
+                "filename_prefix": "payment_document",
+            },
+            {
+                "name": "other",
+                "filename_prefix": "document",
+            },
+        ],
+        default_document_type="other",
+        batch_size=5,
         client=fake_openai_client(
             {
                 1: decision("repair_invoices", True, title="Repair Invoice"),

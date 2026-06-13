@@ -147,7 +147,50 @@ def test_public_azure_api_returns_typed_result_with_injected_client(
     assert result.documents[0].output_path.exists()
 
 
-def fake_openai_client(last_request: dict):
+def test_public_azure_api_applies_direct_categories_and_prompts(
+    tmp_path: Path,
+) -> None:
+    source_pdf = tmp_path / "claim.pdf"
+    _write_pdf(source_pdf)
+    last_request = {}
+    fake_client = fake_openai_client(
+        last_request,
+        document_type="bills",
+        title="Bill",
+        reason="Configured bill category.",
+    )
+
+    result = split_claim_file_azure(
+        source_pdf,
+        output_dir=tmp_path / "output",
+        deployment="claims-model",
+        categories=[
+            {"name": "bills", "filename_prefix": "bill"},
+            {"name": "misc", "filename_prefix": "misc"},
+        ],
+        default_document_type="misc",
+        system_prompt="Custom system prompt.",
+        user_prompt="Custom user prompt.",
+        client=fake_client,
+    )
+
+    prompt_payload = json.loads(last_request["input"][1]["content"][0]["text"])
+    assert result.documents[0].segment.document_type == "bills"
+    assert last_request["input"][0]["content"] == "Custom system prompt."
+    assert prompt_payload["instructions"] == "Custom user prompt."
+    assert prompt_payload["allowed_document_types"] == [
+        {"name": "bills", "description": ""},
+        {"name": "misc", "description": ""},
+    ]
+
+
+def fake_openai_client(
+    last_request: dict,
+    *,
+    document_type: str = "police_reports",
+    title: str = "Police Report",
+    reason: str = "Crash report and officer signals.",
+):
     def parse(**kwargs):
         last_request.update(kwargs)
         parsed_output = kwargs["text_format"].model_validate(
@@ -155,11 +198,11 @@ def fake_openai_client(last_request: dict):
                 "pages": [
                     {
                         "page": 1,
-                        "document_type": "police_reports",
+                        "document_type": document_type,
                         "starts_new_document": True,
-                        "title": "Police Report",
+                        "title": title,
                         "confidence": 0.88,
-                        "reason": "Crash report and officer signals.",
+                        "reason": reason,
                     }
                 ]
             }

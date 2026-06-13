@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from .classifiers import azure_classify_pages, make_azure_openai_client
-from .customization import ClaimSplitterConfig, resolve_config
+from .customization import CategoryConfig, ClaimSplitterConfig, resolve_config
 from .models import ClaimSplitResult, ClassificationBatch, DocumentSegment
 from .models import PageAnalysis, PageDecision, PageImage, WrittenDocument
 from .models import result_manifest, segment_manifest
@@ -19,11 +19,19 @@ def split_claim_file_azure(
     input_pdf: str | Path,
     *,
     output_dir: str | Path = "output",
-    config: ClaimSplitterConfig | dict[str, Any] | None = None,
-    config_path: str | Path | None = None,
+    categories: list[CategoryConfig | dict[str, Any]] | None = None,
+    default_document_type: str | None = None,
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
     project_endpoint: str | None = None,
     deployment: str | None = None,
+    temperature: float | None = None,
     batch_size: int | None = None,
+    recent_page_decision_limit: int | None = None,
+    completed_document_limit: int | None = None,
+    high_confidence_batch_boundary: float | None = None,
+    other_type_boundary_confidence: float | None = None,
+    type_change_boundary_confidence: float | None = None,
     render_dpi: int | None = None,
     image_format: str | None = None,
     image_quality: int | None = None,
@@ -33,11 +41,19 @@ def split_claim_file_azure(
     client: Any | None = None,
 ) -> ClaimSplitResult:
     active_config = resolve_config(
-        config=config,
-        config_path=config_path,
+        categories=categories,
+        default_document_type=default_document_type,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
         project_endpoint=project_endpoint,
         deployment=deployment,
+        temperature=temperature,
         batch_size=batch_size,
+        recent_page_decision_limit=recent_page_decision_limit,
+        completed_document_limit=completed_document_limit,
+        high_confidence_batch_boundary=high_confidence_batch_boundary,
+        other_type_boundary_confidence=other_type_boundary_confidence,
+        type_change_boundary_confidence=type_change_boundary_confidence,
         render_dpi=render_dpi,
         image_format=image_format,
         image_quality=image_quality,
@@ -48,8 +64,7 @@ def split_claim_file_azure(
     deployment_name = active_config.azure.deployment
     if not deployment_name:
         raise ValueError(
-            "Azure deployment is required. Pass deployment, set it in config, "
-            "or set AZURE_OPENAI_DEPLOYMENT."
+            "Azure deployment is required. Pass deployment directly."
         )
 
     project_client = None
@@ -58,8 +73,7 @@ def split_claim_file_azure(
         if openai_client is None:
             if not active_config.azure.project_endpoint:
                 raise ValueError(
-                    "Azure project endpoint is required. Pass project_endpoint, "
-                    "set it in config, or set AZURE_AI_PROJECT_ENDPOINT."
+                    "Azure project endpoint is required. Pass project_endpoint directly."
                 )
             project_client, openai_client = make_azure_openai_client(
                 active_config.azure.project_endpoint

@@ -38,89 +38,67 @@ Authenticate with Azure first:
 az login
 ```
 
-Configuration precedence is:
+Configuration precedence is intentionally simple:
 
 ```text
-direct function/CLI args > Python config object > JSON config file > environment variables > built-in defaults
+direct function args > built-in defaults
 ```
 
-Environment variables:
+The typed defaults are visible in Python:
 
-```powershell
-$env:AZURE_AI_PROJECT_ENDPOINT="https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME"
-$env:AZURE_OPENAI_DEPLOYMENT="gpt-4.1-mini"
+```python
+from claim_file_splitter import ClaimSplitterConfig
+
+defaults = ClaimSplitterConfig()
+print(defaults.model_dump())
 ```
 
-The CLI also loads `.env` from the current working directory, or a specific file
-with `--env-file`.
+Runtime customization is done with explicit arguments:
 
-## JSON Config
-
-Use JSON to configure categories, prompts, Azure settings, splitter settings,
-and image rendering:
-
-```json
-{
-  "azure": {
-    "project_endpoint": "https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME",
-    "deployment": "gpt-4.1-mini",
-    "temperature": 0
-  },
-  "categories": [
-    {
-      "name": "repair_invoices",
-      "filename_prefix": "repair_invoice",
-      "description": "Repair invoices and body shop bills."
-    },
-    {
-      "name": "other",
-      "filename_prefix": "document",
-      "description": "Fallback category."
-    }
-  ],
-  "default_document_type": "other",
-  "prompts": {
-    "system_prompt": "You are a claim-file document boundary detector and classifier. Return only structured data.",
-    "user_prompt": "Classify only the attached target page images. Use rolling context only for continuity."
-  },
-  "splitter": {
-    "batch_size": 5,
-    "recent_page_decision_limit": 5,
-    "completed_document_limit": 3,
-    "high_confidence_batch_boundary": 0.75,
-    "other_type_boundary_confidence": 0.75,
-    "type_change_boundary_confidence": 0.5,
-    "max_stored_text_chars": 12000
-  },
-  "rendering": {
-    "dpi": 160,
-    "image_format": "jpeg",
-    "image_quality": 85,
-    "image_detail": "high",
-    "keep_page_images": false
-  }
-}
+```python
+result = split_claim_file_azure(
+    "claim-file.pdf",
+    output_dir="output",
+    project_endpoint="https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME",
+    deployment="gpt-4.1-mini",
+    temperature=0,
+    batch_size=5,
+    categories=[
+        {
+            "name": "repair_invoices",
+            "filename_prefix": "repair_invoice",
+            "description": "Repair invoices and body shop bills.",
+        },
+        {
+            "name": "other",
+            "filename_prefix": "document",
+            "description": "Fallback category.",
+        },
+    ],
+    default_document_type="other",
+    system_prompt="You are a claim-file document boundary detector and classifier. Return only structured data.",
+    user_prompt="Classify only the attached target page images. Use rolling context only for continuity.",
+)
 ```
 
-If `categories` is provided, it replaces the built-in categories completely.
-Configured category names drive both output folders and the Azure structured
-output enum.
+When `categories` is passed, it replaces the built-in categories completely.
+Category names drive output folders and the Azure structured-output enum.
 
 ### Config Reference
 
-Config values are merged in this order:
+Config values resolve in this order:
 
 ```text
-direct function/CLI args > Python config object > JSON config file > environment variables > built-in defaults
+direct overrides > ClaimSplitterConfig defaults
 ```
 
 `azure` controls the Azure client and model call:
 
 | Field | What it does |
 | --- | --- |
-| `project_endpoint` | Azure AI Foundry project endpoint passed to `AIProjectClient`. Can also come from `AZURE_AI_PROJECT_ENDPOINT`. |
-| `deployment` | Azure OpenAI deployment name used as the `model` value. Can also come from `AZURE_OPENAI_DEPLOYMENT`. |
-| `temperature` | Temperature passed to `client.responses.parse(...)`. Default is `0` for stable classification. |
+| `project_endpoint` | Azure AI Foundry project endpoint passed to `AIProjectClient`. Pass with `project_endpoint=...`. |
+| `deployment` | Azure OpenAI deployment name used as the `model` value. Pass with `deployment=...`. |
+| `temperature` | Temperature passed to `client.responses.parse(...)`. Pass with `temperature=...`. Default is `0` for stable classification. |
 
 `categories` controls document types, output folders, filenames, and structured output:
 
@@ -142,6 +120,9 @@ decision is missing or invalid. It must match one configured category.
 
 `splitter` controls batching, context, and boundary reconciliation:
 
+All splitter fields can be passed as Python direct overrides with the same
+names shown below.
+
 | Field | What it does |
 | --- | --- |
 | `batch_size` | Number of PDF pages rendered and sent per model call. Default is `5`. |
@@ -156,30 +137,11 @@ decision is missing or invalid. It must match one configured category.
 
 | Field | What it does |
 | --- | --- |
-| `dpi` | DPI used to render PDF pages into images before Azure classification. |
-| `image_format` | Rendered image format: `jpeg` or `png`. |
-| `image_quality` | JPEG quality from `1` to `100`; only used for JPEG output. |
-| `image_detail` | Responses API image detail value, usually `high`. |
-| `keep_page_images` | When `true`, rendered images are saved under `output/page_images/`; otherwise they are temporary and removed after the run. |
-
-## CLI
-
-Run with Azure:
-
-```powershell
-claim-file-splitter .\claim-file.pdf --output .\output --config .\splitter.json
-```
-
-Override common config values from the CLI:
-
-```powershell
-claim-file-splitter .\claim-file.pdf `
-  --config .\splitter.json `
-  --deployment gpt-4.1-mini `
-  --batch-size 5 `
-  --render-dpi 160 `
-  --keep-page-images
-```
+| `dpi` | DPI used to render PDF pages into images before Azure classification. Pass as `render_dpi=...`. |
+| `image_format` | Rendered image format: `jpeg` or `png`. Pass with `image_format=...`. |
+| `image_quality` | JPEG quality from `1` to `100`; only used for JPEG output. Pass with `image_quality=...`. |
+| `image_detail` | Responses API image detail value, usually `high`. Pass with `image_detail=...`. |
+| `keep_page_images` | When `true`, rendered images are saved under `output/page_images/`; otherwise they are temporary and removed after the run. Pass with `keep_page_images=True`. |
 
 ## Output
 
@@ -362,5 +324,4 @@ does not send embedded PDF text excerpts to the model.
 ```powershell
 python -m pytest -q
 python -m compileall -q src tests
-python -m claim_file_splitter --help
 ```

@@ -22,10 +22,10 @@ available, so they exercise the same structured-output path as production.
 ## Important Files
 
 - `src/claim_file_splitter/customization.py`
-  - Pydantic config schema, JSON config loading, built-in defaults, and dynamic
-    structured-output model generation.
+  - Pydantic config schema, built-in defaults, direct override resolution, and
+    dynamic structured-output model generation.
 - `src/claim_file_splitter/models.py`
-  - Pydantic public result models and small internal conversion helpers.
+  - Pydantic public result models and manifest serialization.
 - `src/claim_file_splitter/classifiers.py`
   - Azure structured-output classifier.
 - `src/claim_file_splitter/pipeline.py`
@@ -33,10 +33,8 @@ available, so they exercise the same structured-output path as production.
     and orchestration.
 - `src/claim_file_splitter/pdf.py`
   - PDF analysis, page rendering, and split-PDF writing.
-- `src/claim_file_splitter/cli.py`
-  - CLI entry point and dotenv loading.
 - `tests/`
-  - Unit tests for CLI env loading, rendering, Azure request shape, batching,
+  - Unit tests for direct overrides, rendering, Azure request shape, batching,
     segmentation, and PDF output behavior.
 
 ## Development Commands
@@ -59,24 +57,17 @@ Compile-check source and tests:
 python -m compileall -q src tests
 ```
 
-Check CLI help:
-
-```powershell
-python -m claim_file_splitter --help
-```
-
-Azure run:
-
-```powershell
-claim-file-splitter .\claim-file.pdf --output .\output --config .\splitter.json
-```
-
 Public API smoke:
 
 ```python
 from claim_file_splitter import split_claim_file_azure
 
-result = split_claim_file_azure("claim-file.pdf", output_dir="output")
+result = split_claim_file_azure(
+    "claim-file.pdf",
+    output_dir="output",
+    project_endpoint="https://example.services.ai.azure.com/api/projects/demo",
+    deployment="claims-model",
+)
 ```
 
 ## Azure Classifier Requirements
@@ -103,13 +94,11 @@ result = split_claim_file_azure("claim-file.pdf", output_dir="output")
 
 ## Testing Expectations
 
-When changing classifier, batching, segmentation, rendering, or CLI behavior,
-run:
+When changing classifier, batching, segmentation, or rendering behavior, run:
 
 ```powershell
 python -m pytest -q
 python -m compileall -q src tests
-python -m claim_file_splitter --help
 ```
 
 For Azure classifier changes, keep or update tests that prove:
@@ -120,8 +109,8 @@ For Azure classifier changes, keep or update tests that prove:
 - embedded PDF text is not present in the Azure prompt payload.
 - multi-page documents are emitted as one output PDF with the expected original
   pages.
-- JSON config can replace categories and filename prefixes.
-- direct function/CLI args override config file and environment values.
+- direct categories can replace defaults and filename prefixes.
+- direct function args override built-in defaults.
 
 ## Repository Hygiene
 

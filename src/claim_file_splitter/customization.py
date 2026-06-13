@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
-import os
 import re
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -186,21 +183,21 @@ class _PageDecisionOutputBase(BaseModel):
     reason: str = Field(description="Short reason for the boundary/type decision.")
 
 
-def load_config_dict(path: str | Path) -> dict[str, Any]:
-    with Path(path).open(encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, dict):
-        raise ValueError("Config JSON must contain an object at the top level.")
-    return payload
-
-
 def resolve_config(
     *,
-    config: ClaimSplitterConfig | dict[str, Any] | None = None,
-    config_path: str | Path | None = None,
+    categories: list[CategoryConfig | dict[str, Any]] | None = None,
+    default_document_type: str | None = None,
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
     project_endpoint: str | None = None,
     deployment: str | None = None,
+    temperature: float | None = None,
     batch_size: int | None = None,
+    recent_page_decision_limit: int | None = None,
+    completed_document_limit: int | None = None,
+    high_confidence_batch_boundary: float | None = None,
+    other_type_boundary_confidence: float | None = None,
+    type_change_boundary_confidence: float | None = None,
     render_dpi: int | None = None,
     image_format: str | None = None,
     image_quality: int | None = None,
@@ -209,64 +206,38 @@ def resolve_config(
     max_stored_text_chars: int | None = None,
 ) -> ClaimSplitterConfig:
     payload = ClaimSplitterConfig().model_dump(mode="python")
-    merge_config(payload, env_config_dict())
-    if config_path is not None:
-        merge_config(payload, load_config_dict(config_path))
-    if config is not None:
-        merge_config(payload, config_override_dict(config))
-    merge_config(
-        payload,
-        direct_override_dict(
-            project_endpoint=project_endpoint,
-            deployment=deployment,
-            batch_size=batch_size,
-            render_dpi=render_dpi,
-            image_format=image_format,
-            image_quality=image_quality,
-            image_detail=image_detail,
-            keep_page_images=keep_page_images,
-            max_stored_text_chars=max_stored_text_chars,
-        ),
-    )
-    return ClaimSplitterConfig.model_validate(payload)
-
-
-def env_config_dict() -> dict[str, Any]:
-    azure = {}
-    if os.getenv("AZURE_AI_PROJECT_ENDPOINT"):
-        azure["project_endpoint"] = os.getenv("AZURE_AI_PROJECT_ENDPOINT")
-    if os.getenv("AZURE_OPENAI_DEPLOYMENT"):
-        azure["deployment"] = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-    return {"azure": azure} if azure else {}
-
-
-def config_override_dict(config: ClaimSplitterConfig | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(config, ClaimSplitterConfig):
-        return config.model_dump(mode="python", exclude_unset=True)
-    if isinstance(config, dict):
-        return config
-    raise TypeError("config must be a ClaimSplitterConfig or dict.")
-
-
-def direct_override_dict(
-    *,
-    project_endpoint: str | None,
-    deployment: str | None,
-    batch_size: int | None,
-    render_dpi: int | None,
-    image_format: str | None,
-    image_quality: int | None,
-    image_detail: str | None,
-    keep_page_images: bool | None,
-    max_stored_text_chars: int | None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"azure": {}, "splitter": {}, "rendering": {}}
+    if categories is not None:
+        payload["categories"] = categories
+    if default_document_type is not None:
+        payload["default_document_type"] = default_document_type
+    if system_prompt is not None:
+        payload["prompts"]["system_prompt"] = system_prompt
+    if user_prompt is not None:
+        payload["prompts"]["user_prompt"] = user_prompt
     if project_endpoint is not None:
         payload["azure"]["project_endpoint"] = project_endpoint
     if deployment is not None:
         payload["azure"]["deployment"] = deployment
+    if temperature is not None:
+        payload["azure"]["temperature"] = temperature
     if batch_size is not None:
         payload["splitter"]["batch_size"] = batch_size
+    if recent_page_decision_limit is not None:
+        payload["splitter"]["recent_page_decision_limit"] = recent_page_decision_limit
+    if completed_document_limit is not None:
+        payload["splitter"]["completed_document_limit"] = completed_document_limit
+    if high_confidence_batch_boundary is not None:
+        payload["splitter"]["high_confidence_batch_boundary"] = (
+            high_confidence_batch_boundary
+        )
+    if other_type_boundary_confidence is not None:
+        payload["splitter"]["other_type_boundary_confidence"] = (
+            other_type_boundary_confidence
+        )
+    if type_change_boundary_confidence is not None:
+        payload["splitter"]["type_change_boundary_confidence"] = (
+            type_change_boundary_confidence
+        )
     if max_stored_text_chars is not None:
         payload["splitter"]["max_stored_text_chars"] = max_stored_text_chars
     if render_dpi is not None:
@@ -279,23 +250,7 @@ def direct_override_dict(
         payload["rendering"]["image_detail"] = image_detail
     if keep_page_images is not None:
         payload["rendering"]["keep_page_images"] = keep_page_images
-    return {
-        key: value
-        for key, value in payload.items()
-        if not isinstance(value, dict) or value
-    }
-
-
-def merge_config(base: dict[str, Any], override: dict[str, Any]) -> None:
-    for key, value in override.items():
-        if (
-            isinstance(value, dict)
-            and isinstance(base.get(key), dict)
-            and key != "categories"
-        ):
-            merge_config(base[key], value)
-        else:
-            base[key] = value
+    return ClaimSplitterConfig.model_validate(payload)
 
 
 def make_batch_classification_output_model(config: ClaimSplitterConfig) -> type[BaseModel]:
