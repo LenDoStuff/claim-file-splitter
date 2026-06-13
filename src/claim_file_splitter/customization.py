@@ -1,100 +1,131 @@
 from __future__ import annotations
 
+import json
+import os
+import re
 from enum import Enum
+from pathlib import Path
+from typing import Any, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import create_model
 
 
-DOCUMENT_CATEGORIES = {
-    "repair_invoices": "repair_invoice",
-    "appraisals": "appraisal",
-    "communications": "communication",
-    "police_reports": "police_report",
-    "photos": "photo_section",
-    "payments": "payment_document",
-    "medical": "medical_document",
-    "legal_correspondence": "legal_correspondence",
-    "other": "document",
-}
+DEFAULT_CATEGORIES = [
+    {
+        "name": "repair_invoices",
+        "filename_prefix": "repair_invoice",
+        "description": "Repair invoices, body shop bills, parts, labor, and amount due pages.",
+        "rule_keywords": [
+            "repair invoice",
+            "auto repair",
+            "body shop",
+            "parts",
+            "labor",
+            "amount due",
+            "invoice number",
+        ],
+    },
+    {
+        "name": "appraisals",
+        "filename_prefix": "appraisal",
+        "description": "Appraisals, valuation reports, and damage estimates.",
+        "rule_keywords": [
+            "appraisal",
+            "valuation",
+            "estimate of damages",
+            "damage estimate",
+            "vehicle value",
+        ],
+    },
+    {
+        "name": "communications",
+        "filename_prefix": "communication",
+        "description": "Emails, letters, claim notes, and general communications.",
+        "rule_keywords": [
+            "from:",
+            "to:",
+            "sent:",
+            "subject:",
+            "email thread",
+            "dear ",
+            "regards",
+        ],
+    },
+    {
+        "name": "police_reports",
+        "filename_prefix": "police_report",
+        "description": "Police, incident, crash, and officer reports.",
+        "rule_keywords": [
+            "police report",
+            "incident report",
+            "crash report",
+            "officer",
+            "case number",
+            "department",
+        ],
+    },
+    {
+        "name": "photos",
+        "filename_prefix": "photo_section",
+        "description": "Photos, photo logs, and image-only damage sections.",
+        "rule_keywords": ["photograph", "photo log", "image section", "scene photos"],
+    },
+    {
+        "name": "payments",
+        "filename_prefix": "payment_document",
+        "description": "Payment notices, checks, remittances, and settlement payments.",
+        "rule_keywords": [
+            "payment",
+            "check number",
+            "paid",
+            "remittance",
+            "settlement payment",
+            "payment notice",
+        ],
+    },
+    {
+        "name": "medical",
+        "filename_prefix": "medical_document",
+        "description": "Medical records, treatment notes, and provider documents.",
+        "rule_keywords": [
+            "medical",
+            "patient",
+            "diagnosis",
+            "treatment",
+            "physician",
+            "hospital",
+            "clinic",
+        ],
+    },
+    {
+        "name": "legal_correspondence",
+        "filename_prefix": "legal_correspondence",
+        "description": "Attorney letters, legal demands, and litigation correspondence.",
+        "rule_keywords": [
+            "law office",
+            "attorney",
+            "legal",
+            "demand letter",
+            "counsel",
+            "litigation",
+            "subpoena",
+        ],
+    },
+    {
+        "name": "other",
+        "filename_prefix": "document",
+        "description": "Fallback category for pages that do not match configured categories.",
+        "rule_keywords": [],
+    },
+]
 
-RULE_KEYWORDS = {
-    "repair_invoices": (
-        "repair invoice",
-        "auto repair",
-        "body shop",
-        "parts",
-        "labor",
-        "amount due",
-        "invoice number",
-    ),
-    "appraisals": (
-        "appraisal",
-        "valuation",
-        "estimate of damages",
-        "damage estimate",
-        "vehicle value",
-    ),
-    "communications": (
-        "from:",
-        "to:",
-        "sent:",
-        "subject:",
-        "email thread",
-        "dear ",
-        "regards",
-    ),
-    "police_reports": (
-        "police report",
-        "incident report",
-        "crash report",
-        "officer",
-        "case number",
-        "department",
-    ),
-    "payments": (
-        "payment",
-        "check number",
-        "paid",
-        "remittance",
-        "settlement payment",
-        "payment notice",
-    ),
-    "medical": (
-        "medical",
-        "patient",
-        "diagnosis",
-        "treatment",
-        "physician",
-        "hospital",
-        "clinic",
-    ),
-    "legal_correspondence": (
-        "law office",
-        "attorney",
-        "legal",
-        "demand letter",
-        "counsel",
-        "litigation",
-        "subpoena",
-    ),
-    "photos": ("photograph", "photo log", "image section", "scene photos"),
-}
-
-DocumentType = Enum(
-    "DocumentType",
-    {name: name for name in DOCUMENT_CATEGORIES},
-    type=str,
-)
-
-DEFAULT_BATCH_SIZE = 5
-IMAGE_DETAIL = "high"
-
-SYSTEM_PROMPT = (
+DEFAULT_SYSTEM_PROMPT = (
     "You are a claim-file document boundary detector and classifier. "
     "Return only structured data."
 )
 
-USER_PROMPT = (
+DEFAULT_USER_PROMPT = (
     "Classify the attached target page images from one insurance claim file. "
     "Use rolling context only to decide whether the first page continues an "
     "already open document. Classify only the target pages listed in the text "
@@ -103,11 +134,97 @@ USER_PROMPT = (
 )
 
 
-class PageDecisionOutput(BaseModel):
-    page: int = Field(description="The one-based source PDF page number.")
-    document_type: DocumentType = Field(
-        description="The configured document category for this page."
+class AzureConfig(BaseModel):
+    project_endpoint: str | None = None
+    deployment: str | None = None
+    temperature: float = 0.0
+
+
+class CategoryConfig(BaseModel):
+    name: str
+    filename_prefix: str
+    description: str = ""
+    rule_keywords: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
+            raise ValueError(
+                "category names must use lowercase letters, numbers, and underscores "
+                "and must start with a letter"
+            )
+        return value
+
+    @field_validator("filename_prefix")
+    @classmethod
+    def validate_filename_prefix(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
+            raise ValueError(
+                "filename prefixes must use lowercase letters, numbers, and underscores "
+                "and must start with a letter"
+            )
+        return value
+
+
+class PromptConfig(BaseModel):
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    user_prompt: str = DEFAULT_USER_PROMPT
+
+
+class SplitterConfig(BaseModel):
+    batch_size: int = Field(default=5, ge=1)
+    recent_page_decision_limit: int = Field(default=5, ge=0)
+    completed_document_limit: int = Field(default=3, ge=0)
+    high_confidence_batch_boundary: float = Field(default=0.75, ge=0.0, le=1.0)
+    other_type_boundary_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    type_change_boundary_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_stored_text_chars: int = Field(default=12000, ge=0)
+    use_pdfplumber_fallback: bool = True
+
+
+class RenderingConfig(BaseModel):
+    dpi: int = Field(default=160, ge=72)
+    image_format: str = "jpeg"
+    image_quality: int = Field(default=85, ge=1, le=100)
+    image_detail: str = "high"
+    keep_page_images: bool = False
+
+    @field_validator("image_format")
+    @classmethod
+    def validate_image_format(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"jpeg", "jpg", "png"}:
+            raise ValueError("image_format must be 'jpeg' or 'png'")
+        return "jpeg" if normalized == "jpg" else normalized
+
+
+class ClaimSplitterConfig(BaseModel):
+    azure: AzureConfig = Field(default_factory=AzureConfig)
+    categories: list[CategoryConfig] = Field(
+        default_factory=lambda: [CategoryConfig(**item) for item in DEFAULT_CATEGORIES]
     )
+    default_document_type: str = "other"
+    prompts: PromptConfig = Field(default_factory=PromptConfig)
+    splitter: SplitterConfig = Field(default_factory=SplitterConfig)
+    rendering: RenderingConfig = Field(default_factory=RenderingConfig)
+
+    @model_validator(mode="after")
+    def validate_categories(self) -> "ClaimSplitterConfig":
+        names = [category.name for category in self.categories]
+        if not names:
+            raise ValueError("at least one category is required")
+        if len(set(names)) != len(names):
+            raise ValueError("category names must be unique")
+        if self.default_document_type not in names:
+            raise ValueError("default_document_type must match a configured category")
+        return self
+
+
+class PageDecisionOutputBase(BaseModel):
+    page: int = Field(description="The one-based source PDF page number.")
     starts_new_document: bool = Field(
         description="True when this page starts a new logical document."
     )
@@ -120,5 +237,172 @@ class PageDecisionOutput(BaseModel):
     reason: str = Field(description="Short reason for the boundary/type decision.")
 
 
-class BatchClassificationOutput(BaseModel):
-    pages: list[PageDecisionOutput]
+def default_config() -> ClaimSplitterConfig:
+    return ClaimSplitterConfig()
+
+
+def load_config(path: str | Path) -> ClaimSplitterConfig:
+    return ClaimSplitterConfig.model_validate(load_config_dict(path))
+
+
+def load_config_dict(path: str | Path) -> dict[str, Any]:
+    with Path(path).open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError("Config JSON must contain an object at the top level.")
+    return payload
+
+
+def resolve_config(
+    *,
+    config: ClaimSplitterConfig | dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+    project_endpoint: str | None = None,
+    deployment: str | None = None,
+    batch_size: int | None = None,
+    render_dpi: int | None = None,
+    image_format: str | None = None,
+    image_quality: int | None = None,
+    image_detail: str | None = None,
+    keep_page_images: bool | None = None,
+    max_stored_text_chars: int | None = None,
+    use_pdfplumber_fallback: bool | None = None,
+) -> ClaimSplitterConfig:
+    payload = default_config().model_dump(mode="python")
+    merge_config(payload, env_config_dict())
+    if config_path is not None:
+        merge_config(payload, load_config_dict(config_path))
+    if config is not None:
+        merge_config(payload, config_override_dict(config))
+    merge_config(
+        payload,
+        direct_override_dict(
+            project_endpoint=project_endpoint,
+            deployment=deployment,
+            batch_size=batch_size,
+            render_dpi=render_dpi,
+            image_format=image_format,
+            image_quality=image_quality,
+            image_detail=image_detail,
+            keep_page_images=keep_page_images,
+            max_stored_text_chars=max_stored_text_chars,
+            use_pdfplumber_fallback=use_pdfplumber_fallback,
+        ),
+    )
+    return ClaimSplitterConfig.model_validate(payload)
+
+
+def env_config_dict() -> dict[str, Any]:
+    azure = {}
+    if os.getenv("AZURE_AI_PROJECT_ENDPOINT"):
+        azure["project_endpoint"] = os.getenv("AZURE_AI_PROJECT_ENDPOINT")
+    if os.getenv("AZURE_OPENAI_DEPLOYMENT"):
+        azure["deployment"] = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    return {"azure": azure} if azure else {}
+
+
+def config_override_dict(config: ClaimSplitterConfig | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(config, ClaimSplitterConfig):
+        return config.model_dump(mode="python", exclude_unset=True)
+    if isinstance(config, dict):
+        return config
+    raise TypeError("config must be a ClaimSplitterConfig or dict.")
+
+
+def direct_override_dict(**kwargs: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"azure": {}, "splitter": {}, "rendering": {}}
+    if kwargs["project_endpoint"] is not None:
+        payload["azure"]["project_endpoint"] = kwargs["project_endpoint"]
+    if kwargs["deployment"] is not None:
+        payload["azure"]["deployment"] = kwargs["deployment"]
+    if kwargs["batch_size"] is not None:
+        payload["splitter"]["batch_size"] = kwargs["batch_size"]
+    if kwargs["max_stored_text_chars"] is not None:
+        payload["splitter"]["max_stored_text_chars"] = kwargs["max_stored_text_chars"]
+    if kwargs["use_pdfplumber_fallback"] is not None:
+        payload["splitter"]["use_pdfplumber_fallback"] = kwargs[
+            "use_pdfplumber_fallback"
+        ]
+    if kwargs["render_dpi"] is not None:
+        payload["rendering"]["dpi"] = kwargs["render_dpi"]
+    if kwargs["image_format"] is not None:
+        payload["rendering"]["image_format"] = kwargs["image_format"]
+    if kwargs["image_quality"] is not None:
+        payload["rendering"]["image_quality"] = kwargs["image_quality"]
+    if kwargs["image_detail"] is not None:
+        payload["rendering"]["image_detail"] = kwargs["image_detail"]
+    if kwargs["keep_page_images"] is not None:
+        payload["rendering"]["keep_page_images"] = kwargs["keep_page_images"]
+    return remove_empty_dicts(payload)
+
+
+def remove_empty_dicts(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if not isinstance(value, dict) or value
+    }
+
+
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> None:
+    for key, value in override.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(base.get(key), dict)
+            and key != "categories"
+        ):
+            merge_config(base[key], value)
+        else:
+            base[key] = value
+
+
+def category_names(config: ClaimSplitterConfig) -> list[str]:
+    return [category.name for category in config.categories]
+
+
+def category_prefixes(config: ClaimSplitterConfig) -> dict[str, str]:
+    return {
+        category.name: category.filename_prefix
+        for category in config.categories
+    }
+
+
+def rule_keywords(config: ClaimSplitterConfig) -> dict[str, tuple[str, ...]]:
+    return {
+        category.name: tuple(category.rule_keywords)
+        for category in config.categories
+    }
+
+
+def category_prompt_items(config: ClaimSplitterConfig) -> list[dict[str, str]]:
+    return [
+        {
+            "name": category.name,
+            "description": category.description,
+        }
+        for category in config.categories
+    ]
+
+
+def make_batch_classification_output_model(config: ClaimSplitterConfig) -> type[BaseModel]:
+    document_type = Enum(
+        "DocumentType",
+        {category.name: category.name for category in config.categories},
+        type=str,
+    )
+    page_decision_output = create_model(
+        "PageDecisionOutput",
+        __base__=PageDecisionOutputBase,
+        document_type=(
+            document_type,
+            Field(description="The configured document category for this page."),
+        ),
+    )
+    return create_model(
+        "BatchClassificationOutput",
+        pages=(list[page_decision_output], Field(default_factory=list)),
+    )
+
+
+BatchClassificationOutput = make_batch_classification_output_model(default_config())
+PageDecisionOutput = get_args(BatchClassificationOutput.model_fields["pages"].annotation)[0]

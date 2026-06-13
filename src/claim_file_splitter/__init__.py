@@ -1,5 +1,14 @@
-"""Claim-file PDF splitting and classification pipeline."""
+"""Azure claim-file PDF splitting module."""
 
-from .pipeline import split_claim_file
+from .customization import ClaimSplitterConfig
+from .models import ClaimSplitResult, DocumentSegment, PageDecision, WrittenDocument
+from .pipeline import split_claim_file_azure
 
-__all__ = ["split_claim_file"]
+__all__ = [
+    "ClaimSplitResult",
+    "ClaimSplitterConfig",
+    "DocumentSegment",
+    "PageDecision",
+    "WrittenDocument",
+    "split_claim_file_azure",
+]

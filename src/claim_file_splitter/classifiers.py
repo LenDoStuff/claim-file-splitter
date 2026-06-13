@@ -4,23 +4,31 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from .customization import BatchClassificationOutput, IMAGE_DETAIL, SYSTEM_PROMPT
-from .customization import RULE_KEYWORDS, USER_PROMPT
-from .models import DOCUMENT_TYPES, make_decision
-from .models import normalize_document_type, page_image_prompt
+from pydantic import BaseModel
+
+from .customization import ClaimSplitterConfig, category_prompt_items
+from .customization import default_config, make_batch_classification_output_model
+from .customization import rule_keywords
+from .models import make_decision, normalize_document_type, page_image_prompt
 
 
 def rule_based_classify_pages(
     pages: Sequence[dict[str, Any]],
     *,
+    config: ClaimSplitterConfig | None = None,
     previous_page: dict[str, Any] | None = None,
     rolling_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    active_config = config or default_config()
     decisions = []
-    previous_type = classify_page_by_rules(previous_page)[0] if previous_page else None
+    previous_type = (
+        classify_page_by_rules(previous_page, active_config)[0]
+        if previous_page
+        else None
+    )
 
     for page in pages:
-        document_type, confidence, reason = classify_page_by_rules(page)
+        document_type, confidence, reason = classify_page_by_rules(page, active_config)
         starts_new_document = page["page_number"] == 1 or previous_type is None
         if previous_type is not None and document_type != previous_type:
             starts_new_document = True
@@ -30,6 +38,7 @@ def rule_based_classify_pages(
                 page["page_number"],
                 document_type,
                 starts_new_document,
+                config=active_config,
                 title=first_line(page["text"]),
                 confidence=confidence,
                 reason=reason,
@@ -40,24 +49,36 @@ def rule_based_classify_pages(
     return decisions
 
 
-def classify_page_by_rules(page: dict[str, Any]) -> tuple[str, float, str]:
+def classify_page_by_rules(
+    page: dict[str, Any],
+    config: ClaimSplitterConfig,
+) -> tuple[str, float, str]:
     if page["is_image_only"]:
-        return "photos", 0.55, "Image-only page with no extractable text."
+        return image_only_document_type(config), 0.55, (
+            "Image-only page with no extractable text."
+        )
 
     text = page["text"].lower()
     scores = {
         document_type: sum(1 for keyword in keywords if keyword in text)
-        for document_type, keywords in RULE_KEYWORDS.items()
+        for document_type, keywords in rule_keywords(config).items()
     }
     scores = {document_type: score for document_type, score in scores.items() if score}
     if not scores:
-        return "other", 0.25, "No strong claim-document keywords matched."
+        return config.default_document_type, 0.25, (
+            "No strong claim-document keywords matched."
+        )
 
     document_type = max(scores, key=scores.get)
     score = scores[document_type]
     return document_type, min(0.95, 0.45 + (score * 0.12)), (
         f"Matched {score} keyword signal(s)."
     )
+
+
+def image_only_document_type(config: ClaimSplitterConfig) -> str:
+    names = {category.name for category in config.categories}
+    return "photos" if "photos" in names else config.default_document_type
 
 
 def make_azure_openai_client(project_endpoint: str) -> tuple[Any, Any]:
@@ -76,9 +97,11 @@ def azure_classify_pages(
     deployment: str,
     pages: Sequence[dict[str, Any]],
     *,
+    config: ClaimSplitterConfig | None = None,
     previous_page: dict[str, Any] | None = None,
     rolling_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    active_config = config or default_config()
     missing_images = [page["page_number"] for page in pages if page.get("image") is None]
     if missing_images:
         raise ValueError(
@@ -86,25 +109,29 @@ def azure_classify_pages(
             f"Missing images for page(s): {missing_images}"
         )
 
-    prompt = build_azure_prompt(pages, rolling_context)
+    prompt = build_azure_prompt(pages, rolling_context, active_config)
+    text_format = make_batch_classification_output_model(active_config)
     parsed = call_azure_model(
         client,
         deployment,
         prompt,
         pages,
+        config=active_config,
+        text_format=text_format,
     )
-    decisions = decisions_from_structured_output(parsed)
-    return repair_decision_list(decisions, pages)
+    decisions = decisions_from_structured_output(parsed, active_config)
+    return repair_decision_list(decisions, pages, active_config)
 
 
 def build_azure_prompt(
     pages: Sequence[dict[str, Any]],
     rolling_context: dict[str, Any] | None,
+    config: ClaimSplitterConfig,
 ) -> str:
     return json.dumps(
         {
-            "allowed_document_types": list(DOCUMENT_TYPES),
-            "instructions": USER_PROMPT,
+            "allowed_document_types": category_prompt_items(config),
+            "instructions": config.prompts.user_prompt,
             "rolling_context": rolling_context or {},
             "target_pages": [page_image_prompt(page) for page in pages],
         },
@@ -117,7 +144,10 @@ def call_azure_model(
     deployment: str,
     prompt: str,
     pages: Sequence[dict[str, Any]],
-) -> BatchClassificationOutput:
+    *,
+    config: ClaimSplitterConfig,
+    text_format: type[BaseModel],
+) -> BaseModel:
     if not hasattr(client, "responses") or not hasattr(client.responses, "parse"):
         raise ValueError("OpenAI client must provide responses.parse.")
 
@@ -126,7 +156,7 @@ def call_azure_model(
         input=[
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT,
+                "content": config.prompts.system_prompt,
             },
             {
                 "role": "user",
@@ -136,29 +166,34 @@ def call_azure_model(
                         {
                             "type": "input_image",
                             "image_url": page["image"]["data_uri"],
-                            "detail": IMAGE_DETAIL,
+                            "detail": config.rendering.image_detail,
                         }
                         for page in pages
                     ],
                 ],
             },
         ],
-        text_format=BatchClassificationOutput,
-        temperature=0,
+        text_format=text_format,
+        temperature=config.azure.temperature,
     )
     return response.output_parsed
 
 
 def decisions_from_structured_output(
-    output: BatchClassificationOutput,
+    output: BaseModel,
+    config: ClaimSplitterConfig,
 ) -> list[dict[str, Any]]:
     decisions = []
-    for item in output.pages:
+    for item in output.pages:  # type: ignore[attr-defined]
+        document_type = item.document_type
+        if hasattr(document_type, "value"):
+            document_type = document_type.value
         decisions.append(
             make_decision(
                 item.page,
-                normalize_document_type(item.document_type.value),
+                normalize_document_type(str(document_type), config),
                 item.starts_new_document,
+                config=config,
                 title=item.title,
                 confidence=item.confidence,
                 reason=item.reason,
@@ -170,6 +205,7 @@ def decisions_from_structured_output(
 def repair_decision_list(
     decisions: Sequence[dict[str, Any]],
     pages: Sequence[dict[str, Any]],
+    config: ClaimSplitterConfig,
 ) -> list[dict[str, Any]]:
     by_page = {decision["page_number"]: decision for decision in decisions}
     repaired = []
@@ -178,8 +214,9 @@ def repair_decision_list(
         if decision is None:
             decision = make_decision(
                 page["page_number"],
-                "photos" if page["is_image_only"] else "other",
+                image_only_document_type(config) if page["is_image_only"] else config.default_document_type,
                 False,
+                config=config,
                 title=first_line(page["text"]),
                 confidence=0.2,
                 reason="Classifier omitted this page; fallback decision inserted.",

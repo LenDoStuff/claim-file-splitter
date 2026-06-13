@@ -8,8 +8,6 @@ from typing import Any
 
 from pypdf import PdfReader, PdfWriter
 
-from .models import DOCUMENT_TYPE_PREFIXES
-
 
 def analyze_pdf(
     input_pdf: str | Path,
@@ -52,6 +50,7 @@ def split_pdf(
     input_pdf: str | Path,
     segments: Iterable[dict[str, Any]],
     output_dir: str | Path,
+    filename_prefixes: dict[str, str],
 ) -> list[dict[str, Any]]:
     source = Path(input_pdf)
     root = Path(output_dir)
@@ -64,7 +63,7 @@ def split_pdf(
         target_dir = root / document_type
         target_dir.mkdir(parents=True, exist_ok=True)
         counters[document_type] = counters.get(document_type, 0) + 1
-        prefix = DOCUMENT_TYPE_PREFIXES[document_type]
+        prefix = filename_prefixes[document_type]
         output_path = target_dir / f"{prefix}_{counters[document_type]:03d}.pdf"
 
         writer = PdfWriter()

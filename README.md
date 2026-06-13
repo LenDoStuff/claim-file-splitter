@@ -1,8 +1,26 @@
 # Claim File Splitter
 
-Python pipeline for splitting a large insurance claim-file PDF into logical documents, classifying each extracted document, and writing the split PDFs into document-type folders.
+Python module for splitting a large insurance claim-file PDF into logical
+documents, classifying each extracted document with Azure OpenAI structured
+output, and writing split PDFs into document-type folders.
 
-The production path uses Azure AI Projects to create an authenticated Azure OpenAI client. A deterministic rule-based classifier is included for local smoke tests and CI without Azure credentials.
+The primary library API is Azure-first:
+
+```python
+from claim_file_splitter import split_claim_file_azure
+
+result = split_claim_file_azure(
+    "claim-file.pdf",
+    output_dir="output",
+    project_endpoint="https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME",
+    deployment="gpt-4.1-mini",
+)
+
+for document in result.documents:
+    print(document.segment.document_type, document.output_path)
+```
+
+`split_claim_file_azure(...)` returns a typed `ClaimSplitResult` Pydantic model.
 
 ## Install
 
@@ -12,7 +30,7 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-## Azure configuration
+## Azure Configuration
 
 Authenticate with Azure first:
 
@@ -20,66 +38,105 @@ Authenticate with Azure first:
 az login
 ```
 
-Set the Foundry project endpoint and the model deployment name:
+Configuration precedence is:
+
+```text
+direct function/CLI args > Python config object > JSON config file > environment variables > built-in defaults
+```
+
+Environment variables:
 
 ```powershell
 $env:AZURE_AI_PROJECT_ENDPOINT="https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME"
 $env:AZURE_OPENAI_DEPLOYMENT="gpt-4.1-mini"
 ```
 
-Or create a local `.env` file from `.env.example`:
+The CLI also loads `.env` from the current working directory, or a specific file
+with `--env-file`.
 
-```text
-AZURE_AI_PROJECT_ENDPOINT=https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME
-AZURE_OPENAI_DEPLOYMENT=gpt-4.1-mini
+## JSON Config
+
+Use JSON to configure categories, prompts, Azure settings, splitter settings,
+and image rendering:
+
+```json
+{
+  "azure": {
+    "project_endpoint": "https://YOUR-RESOURCE-NAME.services.ai.azure.com/api/projects/YOUR-PROJECT-NAME",
+    "deployment": "gpt-4.1-mini",
+    "temperature": 0
+  },
+  "categories": [
+    {
+      "name": "repair_invoices",
+      "filename_prefix": "repair_invoice",
+      "description": "Repair invoices and body shop bills.",
+      "rule_keywords": ["repair invoice", "body shop", "amount due"]
+    },
+    {
+      "name": "other",
+      "filename_prefix": "document",
+      "description": "Fallback category.",
+      "rule_keywords": []
+    }
+  ],
+  "default_document_type": "other",
+  "prompts": {
+    "system_prompt": "You are a claim-file document boundary detector and classifier. Return only structured data.",
+    "user_prompt": "Classify only the attached target page images. Use rolling context only for continuity."
+  },
+  "splitter": {
+    "batch_size": 5,
+    "recent_page_decision_limit": 5,
+    "completed_document_limit": 3,
+    "high_confidence_batch_boundary": 0.75,
+    "other_type_boundary_confidence": 0.75,
+    "type_change_boundary_confidence": 0.5,
+    "max_stored_text_chars": 12000,
+    "use_pdfplumber_fallback": true
+  },
+  "rendering": {
+    "dpi": 160,
+    "image_format": "jpeg",
+    "image_quality": 85,
+    "image_detail": "high",
+    "keep_page_images": false
+  }
+}
 ```
 
-The CLI loads `.env` from the current working directory before reading defaults. To use a file somewhere else:
+If `categories` is provided, it replaces the built-in categories completely.
+Configured category names drive both output folders and the Azure structured
+output enum.
+
+## CLI
+
+Run with Azure:
 
 ```powershell
-claim-file-splitter .\claim-file.pdf --env-file .\path\to\.env --classifier azure
+claim-file-splitter .\claim-file.pdf --output .\output --config .\splitter.json
 ```
 
-Use a vision-capable Azure OpenAI deployment. The Azure classifier renders PDF pages locally and sends those page images to the model.
-
-Run the splitter:
+Override common config values from the CLI:
 
 ```powershell
-claim-file-splitter .\claim-file.pdf --output .\output --classifier azure
+claim-file-splitter .\claim-file.pdf `
+  --config .\splitter.json `
+  --deployment gpt-4.1-mini `
+  --batch-size 5 `
+  --render-dpi 160 `
+  --keep-page-images
 ```
 
-For a local dry run without Azure:
+Local rule-based smoke run without Azure:
 
 ```powershell
 claim-file-splitter .\claim-file.pdf --output .\output --classifier rules
 ```
 
-For Python PoC code, call the function directly:
-
-```python
-from claim_file_splitter import split_claim_file
-from claim_file_splitter.classifiers import rule_based_classify_pages
-
-result = split_claim_file(
-    "claim-file.pdf",
-    output_dir="output",
-    classify_pages=rule_based_classify_pages,
-)
-```
-
-## Customization
-
-Project-specific prompts, document categories, output filename prefixes, image detail, batch size, and the structured output schema live in:
-
-```text
-src/claim_file_splitter/customization.py
-```
-
-Edit that file when adapting the PoC to a different claim workflow. The Azure path uses `client.responses.parse(..., text_format=BatchClassificationOutput)` so the model returns typed page decisions instead of free-form JSON.
-
 ## Output
 
-The pipeline writes one PDF per detected logical document and a machine-readable manifest:
+The module writes one PDF per detected logical document and a manifest:
 
 ```text
 output/
@@ -92,54 +149,28 @@ output/
   manifest.json
 ```
 
-Supported document-type folders:
+The folder names and filename prefixes come from the active config categories.
 
-- `repair_invoices`
-- `appraisals`
-- `communications`
-- `police_reports`
-- `photos`
-- `payments`
-- `medical`
-- `legal_correspondence`
-- `other`
+## How It Works
 
-## How it works
+1. Reads the source PDF page by page and keeps embedded text for local smoke runs.
+2. Renders Azure-classified PDF pages to images locally.
+3. Sends batches of target page images to the Azure OpenAI client from
+   `AIProjectClient.get_openai_client()`.
+4. Uses `client.responses.parse(..., text_format=...)` with a dynamic structured
+   output model generated from configured categories.
+5. Carries rolling context between batches so documents can continue across
+   batch breaks.
+6. Splits original source PDF pages with `pypdf`, preserving original pages.
+7. Writes split PDFs and `manifest.json`.
 
-1. Reads the source PDF page by page and keeps embedded text available for local rule-based dry runs.
-2. Renders each Azure-classified PDF page to an image locally.
-3. Sends batches of five target page images to the Azure OpenAI client obtained from `AIProjectClient.get_openai_client()`.
-4. Receives page-level boundary and document-type decisions.
-5. Carries rolling context between batches so documents can continue across pages `5/6`, `10/11`, and later breaks.
-6. Splits the original PDF pages with `pypdf`, preserving the original page rendering.
-7. Writes split PDFs under folders named by document type and saves `manifest.json`.
+The Azure prompt path treats rendered images as the authoritative page input. It
+does not send embedded PDF text excerpts to the model.
 
-The Azure prompt path treats rendered images as the authoritative page input. It does not send embedded PDF text excerpts to the model. The local rule-based classifier still uses embedded text so tests and smoke runs work without Azure credentials.
-
-## Batch and rendering options
-
-The default Azure batch size is five pages:
+## Development Checks
 
 ```powershell
-claim-file-splitter .\claim-file.pdf --classifier azure --batch-size 5
+python -m pytest -q
+python -m compileall -q src tests
+python -m claim_file_splitter --help
 ```
-
-Useful rendering controls:
-
-```powershell
-claim-file-splitter .\claim-file.pdf `
-  --classifier azure `
-  --render-dpi 160 `
-  --image-format jpeg `
-  --image-quality 85 `
-  --keep-page-images
-```
-
-When `--keep-page-images` is set, rendered images are saved under `output/page_images/` for inspection. Otherwise they are created in a temporary directory and removed after classification.
-
-## Relevant Microsoft docs
-
-- Azure AI Projects Python SDK: https://learn.microsoft.com/en-us/python/api/overview/azure/ai-projects-readme
-- `AIProjectClient.get_openai_client()`: https://learn.microsoft.com/en-us/python/api/azure-ai-projects/azure.ai.projects.aiprojectclient
-- Azure OpenAI v1 API with the `OpenAI()` client: https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/how-to/use-chat-completions
-- Azure OpenAI image inputs: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/gpt-with-vision
