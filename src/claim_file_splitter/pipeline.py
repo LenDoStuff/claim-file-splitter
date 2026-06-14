@@ -9,9 +9,7 @@ from typing import Any
 
 from .classifiers import azure_classify_pages, make_azure_openai_client
 from .customization import CategoryConfig, ClaimSplitterConfig, resolve_config
-from .models import ClaimSplitResult, ClassificationBatch, DocumentSegment
-from .models import PageAnalysis, PageDecision, PageImage, WrittenDocument
-from .models import result_manifest, segment_manifest
+from .models import ClaimSplitResult, WrittenDocument, result_manifest, segment_manifest
 from .pdf import analyze_pdf, render_pdf_pages, split_pdf
 
 
@@ -120,7 +118,7 @@ def _run_azure_split_pipeline(
             else Path(stack.enter_context(TemporaryDirectory()))
         )
 
-        page_decisions, pages, classification_batches = _classify_page_batches(
+        page_decisions = _classify_page_batches(
             source_pdf,
             pages,
             client=client,
@@ -139,33 +137,12 @@ def _run_azure_split_pipeline(
             },
         )
 
-        result_segments = [
-            DocumentSegment(**segment_manifest(segment))
-            for segment in segments
-        ]
-        segments_by_id = {
-            segment.segment_id: segment
-            for segment in result_segments
-        }
         result = ClaimSplitResult(
             source_pdf=source_pdf,
             output_dir=output_path,
             manifest_path=output_path / "manifest.json",
-            pages=[page_analysis_from_dict(page) for page in pages],
-            page_decisions=[
-                PageDecision.model_validate(decision)
-                for decision in page_decisions
-            ],
-            classification_batches=[
-                ClassificationBatch.model_validate(batch)
-                for batch in classification_batches
-            ],
-            segments=result_segments,
             documents=[
-                WrittenDocument(
-                    segment=segments_by_id[written["segment"]["segment_id"]],
-                    output_path=written["output_path"],
-                )
+                document_from_written_segment(written)
                 for written in written_documents
             ],
         )
@@ -184,9 +161,8 @@ def _classify_page_batches(
     deployment: str,
     render_dir: Path,
     config: ClaimSplitterConfig,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     decisions = []
-    batches = []
 
     for start in range(0, len(pages), config.splitter.batch_size):
         batch = pages[start : start + config.splitter.batch_size]
@@ -214,24 +190,14 @@ def _classify_page_batches(
             config=config,
             rolling_context=rolling_context,
         )
-        batch_decisions, reconciliation_messages = reconcile_batch_boundary(
+        batch_decisions, _ = reconcile_batch_boundary(
             batch_decisions,
             decisions,
             config,
         )
         decisions.extend(batch_decisions)
-        batches.append(
-            {
-                "batch_number": (start // config.splitter.batch_size) + 1,
-                "start_page": batch[0]["page_number"],
-                "end_page": batch[-1]["page_number"],
-                "page_numbers": [page["page_number"] for page in batch],
-                "rolling_context": rolling_context,
-                "reconciliation_messages": reconciliation_messages,
-            }
-        )
 
-    return decisions, pages, batches
+    return decisions
 
 
 def build_rolling_context(
@@ -335,26 +301,18 @@ def build_segments(
     return segments
 
 
-def page_analysis_from_dict(page: dict[str, Any]) -> PageAnalysis:
-    rendered_image = None
-    if page.get("image") is not None:
-        image = page["image"]
-        rendered_image = PageImage(
-            page_number=image["page_number"],
-            mime_type=image["mime_type"],
-            width_px=image["width_px"],
-            height_px=image["height_px"],
-            byte_size=image["byte_size"],
-            path=image.get("path"),
-        )
-    return PageAnalysis(
-        page_number=page["page_number"],
-        word_count=page["word_count"],
-        char_count=page["char_count"],
-        image_count=page["image_count"],
-        is_image_only=page["is_image_only"],
-        may_require_ocr=page["may_require_ocr"],
-        rendered_image=rendered_image,
+def document_from_written_segment(written: dict[str, Any]) -> WrittenDocument:
+    segment = written["segment"]
+    return WrittenDocument(
+        document_id=segment["segment_id"],
+        name=segment["title"],
+        summary=segment["summary"],
+        path=written["output_path"],
+        document_type=segment["document_type"],
+        start_page=segment["start_page"],
+        end_page=segment["end_page"],
+        page_count=segment["end_page"] - segment["start_page"] + 1,
+        confidence=segment["confidence"],
     )
 
 

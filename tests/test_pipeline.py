@@ -35,7 +35,7 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     )
 
     assert isinstance(result, ClaimSplitResult)
-    assert [segment.document_type for segment in result.segments] == [
+    assert [document.document_type for document in result.documents] == [
         "repair_invoices",
         "appraisals",
         "communications",
@@ -43,8 +43,8 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
         "legal_correspondence",
     ]
     assert [
-        (segment.start_page, segment.end_page)
-        for segment in result.segments
+        (document.start_page, document.end_page)
+        for document in result.documents
     ] == [
         (1, 2),
         (3, 3),
@@ -75,12 +75,24 @@ def test_default_config_preserves_current_folder_behavior(tmp_path: Path) -> Non
     assert len(PdfReader(str(legal_pdf)).pages) == 1
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["page_count"] == 6
+    assert set(manifest) == {
+        "source_pdf",
+        "output_dir",
+        "document_count",
+        "documents",
+    }
     assert manifest["document_count"] == 5
-    assert manifest["documents"][0]["summary"] == (
-        "Page 1 Test classifier decision."
-    )
-    assert manifest["documents"][0]["output_path"].endswith("repair_invoice_001.pdf")
+    assert manifest["documents"][0] == {
+        "document_id": 1,
+        "name": "Page 1",
+        "summary": "Page 1 Test classifier decision.",
+        "path": str(repair_pdf),
+        "document_type": "repair_invoices",
+        "start_page": 1,
+        "end_page": 2,
+        "page_count": 2,
+        "confidence": 0.9,
+    }
 
 
 def test_direct_categories_replace_defaults_and_filename_prefixes(
@@ -118,7 +130,7 @@ def test_direct_categories_replace_defaults_and_filename_prefixes(
         ),
     )
 
-    assert {segment.document_type for segment in result.segments} == {
+    assert {document.document_type for document in result.documents} == {
         "shop_bills",
         "misc",
     }
@@ -130,8 +142,9 @@ def test_direct_categories_replace_defaults_and_filename_prefixes(
 def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
     source_pdf = tmp_path / "claim_file.pdf"
     _write_numbered_claim_pdf(source_pdf, page_count=5)
+    batches = []
 
-    result = split_claim_file_azure(
+    split_claim_file_azure(
         source_pdf,
         output_dir=tmp_path / "output",
         deployment="claims-model",
@@ -143,11 +156,12 @@ def test_config_batch_size_changes_batch_grouping(tmp_path: Path) -> None:
                 3: decision("other", False),
                 4: decision("other", False),
                 5: decision("other", False),
-            }
+            },
+            batches=batches,
         ),
     )
 
-    assert [batch.page_numbers for batch in result.classification_batches] == [
+    assert batches == [
         [1, 2],
         [3, 4],
         [5],
@@ -189,15 +203,15 @@ def test_multi_page_invoice_is_written_as_one_original_pdf(tmp_path: Path) -> No
 
     invoice = result.documents[0]
     payment = result.documents[1]
-    assert invoice.segment.document_type == "repair_invoices"
-    assert invoice.segment.page_count == 3
-    assert invoice.segment.summary == "Repair Invoice Test classifier decision."
-    assert payment.segment.document_type == "payments"
-    assert payment.segment.page_count == 1
-    assert payment.segment.summary == "Payment Test classifier decision."
+    assert invoice.document_type == "repair_invoices"
+    assert invoice.page_count == 3
+    assert invoice.summary == "Repair Invoice Test classifier decision."
+    assert payment.document_type == "payments"
+    assert payment.page_count == 1
+    assert payment.summary == "Payment Test classifier decision."
 
-    invoice_reader = PdfReader(str(invoice.output_path))
-    payment_reader = PdfReader(str(payment.output_path))
+    invoice_reader = PdfReader(str(invoice.path))
+    payment_reader = PdfReader(str(payment.path))
     assert len(invoice_reader.pages) == 3
     assert len(payment_reader.pages) == 1
     assert [
@@ -281,9 +295,15 @@ def decision(
     }
 
 
-def fake_openai_client(decisions_by_page: dict[int, dict]):
+def fake_openai_client(
+    decisions_by_page: dict[int, dict],
+    *,
+    batches: list[list[int]] | None = None,
+):
     def parse(**kwargs):
         prompt = json.loads(kwargs["input"][1]["content"][0]["text"])
+        if batches is not None:
+            batches.append([page["page"] for page in prompt["target_pages"]])
         parsed_pages = [
             {
                 "page": page["page"],

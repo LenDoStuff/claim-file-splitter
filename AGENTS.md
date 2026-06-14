@@ -91,6 +91,9 @@ result = split_claim_file_azure(
   pages from extracted text.
 - Output folders and filename prefixes come from
   `ClaimSplitterConfig.categories`.
+- `ClaimSplitResult` and `manifest.json` are document-level outputs only. Do
+  not expose page decisions, classification batches, rolling context, or
+  internal segments in the public result or manifest.
 
 ## Testing Expectations
 
@@ -109,6 +112,9 @@ For Azure classifier changes, keep or update tests that prove:
 - embedded PDF text is not present in the Azure prompt payload.
 - multi-page documents are emitted as one output PDF with the expected original
   pages.
+- manifest output contains document-level fields only: `document_id`, `name`,
+  `summary`, `path`, `document_type`, `start_page`, `end_page`, `page_count`,
+  and `confidence`.
 - direct categories can replace defaults and filename prefixes.
 - direct function args override built-in defaults.
 

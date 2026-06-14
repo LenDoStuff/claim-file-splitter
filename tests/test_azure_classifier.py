@@ -140,11 +140,11 @@ def test_public_azure_api_returns_typed_result_with_injected_client(
 
     assert isinstance(result, ClaimSplitResult)
     assert result.document_count == 1
-    assert result.documents[0].segment.document_type == "police_reports"
-    assert result.documents[0].segment.summary == (
+    assert result.documents[0].document_type == "police_reports"
+    assert result.documents[0].summary == (
         "Police Report Crash report and officer signals."
     )
-    assert result.documents[0].output_path.exists()
+    assert result.documents[0].path.exists()
 
 
 def test_public_azure_api_applies_direct_categories_and_prompts(
@@ -175,7 +175,7 @@ def test_public_azure_api_applies_direct_categories_and_prompts(
     )
 
     prompt_payload = json.loads(last_request["input"][1]["content"][0]["text"])
-    assert result.documents[0].segment.document_type == "bills"
+    assert result.documents[0].document_type == "bills"
     assert last_request["input"][0]["content"] == "Custom system prompt."
     assert prompt_payload["instructions"] == "Custom user prompt."
     assert prompt_payload["allowed_document_types"] == [

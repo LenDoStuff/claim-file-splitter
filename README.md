@@ -17,7 +17,7 @@ result = split_claim_file_azure(
 )
 
 for document in result.documents:
-    print(document.segment.document_type, document.output_path)
+    print(document.document_type, document.path)
 ```
 
 `split_claim_file_azure(...)` returns a typed `ClaimSplitResult` Pydantic model.
@@ -185,7 +185,7 @@ output/
   manifest.json
 ```
 
-Each split PDF contains the original source PDF pages for that segment. A
+Each split PDF contains the original source PDF pages for that document. A
 3-page invoice is written as one 3-page PDF, not as three separate PDFs.
 
 When `rendering.keep_page_images` is `true`, the output also includes rendered
@@ -210,98 +210,40 @@ split PDFs.
 {
   "source_pdf": "claim-file.pdf",
   "output_dir": "output",
-  "page_count": 12,
-  "document_count": 3,
-  "pages": [],
-  "page_decisions": [],
-  "classification_batches": [],
-  "documents": []
+  "document_count": 1,
+  "documents": [
+    {
+      "document_id": 1,
+      "name": "Repair Invoice",
+      "summary": "Repair Invoice. Visible invoice header and continuation pages share invoice details.",
+      "path": "output/repair_invoices/repair_invoice_001.pdf",
+      "document_type": "repair_invoices",
+      "start_page": 1,
+      "end_page": 3,
+      "page_count": 3,
+      "confidence": 0.91
+    }
+  ]
 }
 ```
 
-`pages` contains one entry per source PDF page:
+The manifest is intentionally document-level only. Page decisions, batch
+metadata, and rolling context are internal pipeline details and are not written
+to the manifest.
 
-```json
-{
-  "page_number": 1,
-  "word_count": 120,
-  "char_count": 840,
-  "image_count": 2,
-  "is_image_only": false,
-  "may_require_ocr": false,
-  "rendered_image": {
-    "page_number": 1,
-    "mime_type": "image/jpeg",
-    "width_px": 1224,
-    "height_px": 1584,
-    "byte_size": 184321,
-    "path": "output/page_images/page_000001.jpg"
-  }
-}
-```
+Each document entry has these fields:
 
-`rendered_image` appears only when the page was rendered for Azure
-classification. `path` appears only when `keep_page_images` is `true`. The image
-data URI sent to Azure is not written to the manifest.
-
-`page_decisions` contains one classifier decision per source PDF page:
-
-```json
-{
-  "page_number": 1,
-  "document_type": "repair_invoices",
-  "starts_new_document": true,
-  "title": "Repair Invoice",
-  "confidence": 0.92,
-  "reason": "Visible invoice header and line-item repair details."
-}
-```
-
-`classification_batches` records model-call batching and continuity context:
-
-```json
-{
-  "batch_number": 1,
-  "start_page": 1,
-  "end_page": 5,
-  "page_numbers": [1, 2, 3, 4, 5],
-  "rolling_context": {
-    "open_document": null,
-    "recent_page_decisions": [],
-    "completed_documents": [],
-    "document_type_counts": {}
-  },
-  "reconciliation_messages": []
-}
-```
-
-Later batches include the prior open document, recent decisions, completed
-document summaries, and document type counts in `rolling_context`.
-
-`documents` contains one entry per written split PDF:
-
-```json
-{
-  "segment_id": 1,
-  "document_type": "repair_invoices",
-  "start_page": 1,
-  "end_page": 3,
-  "page_count": 3,
-  "title": "Repair Invoice",
-  "summary": "Repair Invoice. Visible invoice header and continuation pages share invoice details.",
-  "confidence": 0.91,
-  "reasons": [
-    "Visible invoice header.",
-    "Continuation pages share invoice details."
-  ],
-  "output_path": "output/repair_invoices/repair_invoice_001.pdf"
-}
-```
-
-`start_page` and `end_page` are one-based, inclusive source PDF page numbers.
-`summary` is a short segment-level description derived from page titles and
-classifier reasons. `confidence` is the average confidence across the page
-decisions in that document segment.
+| Field | Meaning |
+| --- | --- |
+| `document_id` | Sequential document number assigned during splitting. |
+| `name` | Human-readable document name from the classifier title, with a category label fallback. |
+| `summary` | Short document-level description derived from classifier titles and reasons. |
+| `path` | Path to the split PDF written for this document. |
+| `document_type` | Configured category name. This is also the output folder name. |
+| `start_page` | One-based first source PDF page included in the document. |
+| `end_page` | One-based final source PDF page included in the document. |
+| `page_count` | Number of original source pages copied into the split PDF. |
+| `confidence` | Average confidence across the internal page decisions for the document, rounded to four decimals. |
 
 ## How It Works
 

@@ -29,77 +29,27 @@ DOCUMENT_TYPE_ALIASES = {
 }
 
 
-class PageImage(BaseModel):
-    page_number: int
-    mime_type: str
-    width_px: int
-    height_px: int
-    byte_size: int
-    path: Path | None = None
-
-
-class PageAnalysis(BaseModel):
-    page_number: int
-    word_count: int
-    char_count: int
-    image_count: int
-    is_image_only: bool
-    may_require_ocr: bool
-    rendered_image: PageImage | None = None
-
-
-class PageDecision(BaseModel):
-    page_number: int
-    document_type: str
-    starts_new_document: bool
-    title: str = ""
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    reason: str = ""
-
-
-class ClassificationBatch(BaseModel):
-    batch_number: int
-    start_page: int
-    end_page: int
-    page_numbers: list[int]
-    rolling_context: dict[str, Any]
-    reconciliation_messages: list[str] = Field(default_factory=list)
-
-
-class DocumentSegment(BaseModel):
-    segment_id: int
+class WrittenDocument(BaseModel):
+    document_id: int
+    name: str
+    summary: str
+    path: Path
     document_type: str
     start_page: int
     end_page: int
     page_count: int
-    title: str
-    summary: str
-    confidence: float
-    reasons: list[str] = Field(default_factory=list)
-
-
-class WrittenDocument(BaseModel):
-    segment: DocumentSegment
-    output_path: Path
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class ClaimSplitResult(BaseModel):
     source_pdf: Path
     output_dir: Path
     manifest_path: Path
-    pages: list[PageAnalysis]
-    page_decisions: list[PageDecision]
-    classification_batches: list[ClassificationBatch]
-    segments: list[DocumentSegment]
     documents: list[WrittenDocument]
 
     @property
-    def page_count(self) -> int:
-        return len(self.pages)
-
-    @property
     def document_count(self) -> int:
-        return len(self.segments)
+        return len(self.documents)
 
 
 def normalize_document_type(
@@ -150,28 +100,16 @@ def segment_manifest(segment: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_manifest(result: ClaimSplitResult) -> dict[str, Any]:
+    documents = []
+    for document in result.documents:
+        item = document.model_dump(mode="json", exclude={"path"})
+        item["path"] = str(document.path)
+        item["confidence"] = round(document.confidence, 4)
+        documents.append(item)
+
     return {
         "source_pdf": str(result.source_pdf),
         "output_dir": str(result.output_dir),
-        "page_count": result.page_count,
         "document_count": result.document_count,
-        "pages": [
-            page.model_dump(mode="json", exclude_none=True)
-            for page in result.pages
-        ],
-        "page_decisions": [
-            decision.model_dump(mode="json")
-            for decision in result.page_decisions
-        ],
-        "classification_batches": [
-            batch.model_dump(mode="json")
-            for batch in result.classification_batches
-        ],
-        "documents": [
-            {
-                **document.segment.model_dump(mode="json"),
-                "output_path": str(document.output_path),
-            }
-            for document in result.documents
-        ],
+        "documents": documents,
     }
